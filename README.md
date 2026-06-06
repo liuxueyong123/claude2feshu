@@ -2,7 +2,142 @@
 
 Claude Code ↔ 飞书双向通信。在飞书群里 **@机器人** 发送指令，Claude Code 执行并将结果回传。
 
+## 快速开始
+
+### 1. 安装
+
+```bash
+cd claude2feishu
+pnpm install
+```
+
+### 2. 配置
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env`:
+
+```env
+FEISHU_APP_ID=cli_aXXXXXXXXXXXX
+FEISHU_APP_SECRET=XXXXXXXXXXXXXXXXXXXXXXXX
+# 可选:
+FEISHU_CHAT_ID=oc_xxxxxxxxxxxxxx    # 指定群聊，不填则自动选第一个
+FEISHU_POLL_INTERVAL=3              # 轮询间隔（秒）
+FEISHU_LOG_LEVEL=INFO               # 日志级别
+```
+
+获取方式: [飞书开发者后台](https://open.feishu.cn/app) → 应用 → 凭证与基础信息。
+
+**必需权限:** `im:chat:readonly` / `im:message:read` / `im:message:send`。应用需发布并添加机器人到目标群聊。
+
+### 3. 配置 Claude Code Hooks
+
+在 `~/.claude/settings.json` 中:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 已启动' --type info" }],
+    "Stop": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 任务完成' --type success" }],
+    "StopFailure": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 异常终止' --type error" }],
+    "PermissionRequest": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 等待确认' --type warning" }],
+    "PermissionDenied": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 权限拒绝' --type error" }],
+    "Elicitation": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 等待输入' --type warning" }],
+    "PostToolUseFailure": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 操作失败' --type error" }]
+  }
+}
+```
+
+### 4. 启动
+
+```bash
+pnpm start        # 后台守护进程
+pnpm status       # 验证运行状态
+```
+
+在飞书群里 @机器人 发一条消息，会收到确认卡片。如果本地有 Claude Code 在 iTerm2 中运行，消息会自动发送到终端。
+
 ---
+
+## 命令参考
+
+### 守护进程
+
+| 命令           | 说明              |
+| -------------- | ----------------- |
+| `pnpm start`   | 后台守护进程      |
+| `pnpm stop`    | 停止守护进程      |
+| `pnpm restart` | 重启              |
+| `pnpm status`  | 状态 + inbox 统计 |
+| `pnpm once`    | 单次拉取 (测试)   |
+
+### Inbox 管理
+
+| 命令                     | 说明           |
+| ------------------------ | -------------- |
+| `pnpm inbox`             | 待处理指令列表 |
+| `pnpm pop`               | 弹出下一条指令 |
+| `pnpm done <id>`         | 标记完成       |
+| `pnpm reply <id> <text>` | 回复并标记完成 |
+| `pnpm clear`             | 清理已完成记录 |
+
+### Session 管理
+
+| 命令                            | 说明                            |
+| ------------------------------- | ------------------------------- |
+| `pnpm session-list`             | 查看活跃 session + 待处理消息   |
+| `pnpm session-state <sid>`      | 查看 session 详情 + Claude 状态 |
+| `pnpm session-queue <sid>`      | 查看 session 待投递消息         |
+| `pnpm session-send <sid> <msg>` | 手动发送消息到终端 (调试)       |
+
+### 测试
+
+| 命令                | 说明                         |
+| ------------------- | ---------------------------- |
+| `pnpm test-webhook` | 测试 API 发送卡片            |
+| `pnpm test-api`     | 测试 API 拉取消息 (不过滤 @) |
+
+---
+
+## 日志与诊断
+
+守护进程日志:
+
+```bash
+tail -f ~/.claude/feishu/feishu_bot.log
+```
+
+Hook 原始数据:
+
+```bash
+tail -5 ~/.claude/feishu/hook_dump.jsonl
+```
+
+引用消息原始数据（有 parent_id/root_id 时记录）:
+
+```bash
+cat ~/.claude/feishu/message_dump.jsonl
+```
+
+Card → Session 映射:
+
+```bash
+tail -10 ~/.claude/feishu/card_session_map.jsonl
+```
+
+Session 状态:
+
+```bash
+cat ~/.claude/feishu/session_states.json | python3 -m json.tool
+```
+
+---
+
+## 技术栈
+
+TypeScript + Node.js 22 + tsx + 飞书 Open API + AppleScript (iTerm2)
 
 ## 系统架构
 
@@ -29,17 +164,17 @@ Claude Code ↔ 飞书双向通信。在飞书群里 **@机器人** 发送指令
 
 ### 数据文件 (全部在 `~/.claude/feishu/`)
 
-| 文件 | 格式 | 用途 |
-|------|------|------|
-| `session_states.json` | JSON 数组 | Session → 进程映射 (PID/TTY/transcript_path/状态/心跳) |
-| `card_session_map.jsonl` | JSONL (追加) | 飞书卡片 message_id → session_id 映射 |
-| `feishu_session_queue.jsonl` | JSONL (读写) | Session 维度的延迟投递消息队列 |
-| `feishu_inbox.jsonl` | JSONL (读写) | 通用指令队列 (无活跃 session 时回退) |
-| `feishu_checkpoint.json` | JSON | 轮询 checkpoint (最后处理的消息 ID) |
-| `feishu_bot.pid` | 文本 | 守护进程 PID |
-| `feishu_bot.log` | 文本 (追加) | 守护进程日志 |
-| `hook_dump.jsonl` | JSONL (追加) | Hook 原始 JSON 诊断数据 |
-| `message_dump.jsonl` | JSONL (追加) | 引用消息原始数据诊断 |
+| 文件                         | 格式         | 用途                                                   |
+| ---------------------------- | ------------ | ------------------------------------------------------ |
+| `session_states.json`        | JSON 数组    | Session → 进程映射 (PID/TTY/transcript_path/状态/心跳) |
+| `card_session_map.jsonl`     | JSONL (追加) | 飞书卡片 message_id → session_id 映射                  |
+| `feishu_session_queue.jsonl` | JSONL (读写) | Session 维度的延迟投递消息队列                         |
+| `feishu_inbox.jsonl`         | JSONL (读写) | 通用指令队列 (无活跃 session 时回退)                   |
+| `feishu_checkpoint.json`     | JSON         | 轮询 checkpoint (最后处理的消息 ID)                    |
+| `feishu_bot.pid`             | 文本         | 守护进程 PID                                           |
+| `feishu_bot.log`             | 文本 (追加)  | 守护进程日志                                           |
+| `hook_dump.jsonl`            | JSONL (追加) | Hook 原始 JSON 诊断数据                                |
+| `message_dump.jsonl`         | JSONL (追加) | 引用消息原始数据诊断                                   |
 
 ### 两大消息流向
 
@@ -74,6 +209,7 @@ Claude Code ↔ 飞书双向通信。在飞书群里 **@机器人** 发送指令
 ### 步骤 2: 消息文本提取 — `extractText()`
 
 入参 `FeishuMessage`:
+
 ```
 {
   message_id: "om_xxxxxxxxxxxxx",
@@ -87,6 +223,7 @@ Claude Code ↔ 飞书双向通信。在飞书群里 **@机器人** 发送指令
 ```
 
 提取逻辑:
+
 ```
 msg_type === "text":
   1. JSON.parse(body.content) → 取 text 字段
@@ -308,20 +445,20 @@ lookupCardSession(quotedMessageId):
 
   每次 tick:
     state = detectState(transcriptPath)
-    
+
     if state === "waiting":
       ok = sendViaITerm(tty, message)
       ok ? onDelivered(true, "已自动发送到 Claude Code 终端")
          : onDelivered(false, "终端发送失败")
       return  // 停止轮询
-    
+
     if state === "gone":
       onDelivered(false, "Claude Code 进程已退出")
       return
-    
+
     if state === "busy" && elapsed < maxWait:
       setTimeout(poll, 3000)  // 继续等待
-    
+
     if elapsed > maxWait:
       onDelivered(false, "超时: 5 分钟内未变为等待状态")
 ```
@@ -337,12 +474,12 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
 ```json
 {
   "hooks": {
-    "SessionStart":       [{ "command": ".../notify.sh --title ' 已启动' --type info" }],
-    "Stop":               [{ "command": ".../notify.sh --title ' 任务完成' --type success" }],
-    "StopFailure":        [{ "command": ".../notify.sh --title ' 异常终止' --type error" }],
-    "PermissionRequest":  [{ "command": ".../notify.sh --title ' 等待确认' --type warning" }],
-    "PermissionDenied":   [{ "command": ".../notify.sh --title ' 权限拒绝' --type error" }],
-    "Elicitation":        [{ "command": ".../notify.sh --title ' 等待输入' --type warning" }],
+    "SessionStart": [{ "command": ".../notify.sh --title ' 已启动' --type info" }],
+    "Stop": [{ "command": ".../notify.sh --title ' 任务完成' --type success" }],
+    "StopFailure": [{ "command": ".../notify.sh --title ' 异常终止' --type error" }],
+    "PermissionRequest": [{ "command": ".../notify.sh --title ' 等待确认' --type warning" }],
+    "PermissionDenied": [{ "command": ".../notify.sh --title ' 权限拒绝' --type error" }],
+    "Elicitation": [{ "command": ".../notify.sh --title ' 等待输入' --type warning" }],
     "PostToolUseFailure": [{ "command": ".../notify.sh --title ' 操作失败' --type error" }]
   }
 }
@@ -358,7 +495,7 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
   "cwd": "/Users/xxx/project",
   "model": "claude-sonnet-4-6",
   "tool_name": "Bash",
-  "tool_input": {"command": "npm test"},
+  "tool_input": { "command": "npm test" },
   "error": "...",
   "question": "...",
   "output": "...",
@@ -391,10 +528,10 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
      Stop:
        → getModelOutput(): 从 transcript 提取最后 assistant text
        → 拼接 "💬 模型输出: ..."
-     
+
      StopFailure:
        → event.error → "💥 错误原因: ..."
-     
+
      PermissionRequest:
        → toolLabel(tool_name): 中文工具名映射 (Bash→"执行 Shell 命令", ...)
        → describeToolInput(tool, input): 工具参数摘要
@@ -405,13 +542,13 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
          - Read: 取 basename(file_path)
          - 其他: 列出 key=value (最多 3 个)
        → getModelOutput(): Claude 最后输出 (帮助理解为什么请求此操作)
-     
+
      PermissionDenied:
        → toolLabel + tool_input 摘要
-     
+
      Elicitation:
        → event.question → "❓ Claude 的提问: ..."
-     
+
      PostToolUseFailure:
        → toolLabel + tool_input + event.error
 
@@ -465,10 +602,10 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
 
 ```
 当需要回复特定消息时 (handleSessionMessage 中的确认卡片):
-  
+
   POST /im/v1/messages/{msgId}/reply
   { content: cardJSON, msg_type: "interactive" }
-  
+
   同样在成功后 registerCardSession(newMessageId, sessionId)
 ```
 
@@ -505,11 +642,11 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
      a. targetSid === 当前 sid → dequeueAll() 取出消息
      b. 目标 session 进程已死    → dequeueAll() 取出消息
      c. 目标 session 进程存活    → 跳过（让 feishu_bot 或 startWaitAndSend 处理）
-   
+
    对所有取出的消息:
      sendViaITerm(proc.tty, msg.content) → ✅/❌
      失败的 → enqueueSession() 重新入队
-   
+
    发送结果通知卡片 (成功 N 条 / 失败 M 条)
 ```
 
@@ -690,7 +827,7 @@ detectState(transcriptPath):
            return "waiting"    // Claude 空闲，等待用户输入
          else:
            return "busy"       // tool_use / max_tokens / stop_sequence 等
-       
+
        if msg.role === "user":
          ts = obj.timestamp
          if ts && (now - ts) > 300000ms:
@@ -711,6 +848,7 @@ detectState(transcriptPath):
 ```
 
 这确保以下场景不会错误判定为 gone:
+
 - Claude 刚启动，transcript 尚无 assistant/user 消息
 - transcript 文件暂时不可读
 - transcript 中存在格式异常的行
@@ -845,7 +983,7 @@ T+3s   feishu_bot 轮询到消息
 getQuotedMessageId() 处理:
 1. body.reply_to.message_id = "om_card_A" → 优先返回!
    ✅ 正确路由到 session-A
-   
+
 如果旧逻辑 (parent_id 优先):
 1. parent_id = "om_thread_parent" → 先返回
    ❌ 可能路由到错误的 session
@@ -860,7 +998,7 @@ T+1s   feishu_bot 轮询到消息
        lookupCardSession("om_normal_msg") → "" (不是卡片，无映射)
        log "未在映射中找到 session ID"
        → 继续往下走（不阻断）
-       
+
        listActive() → [session-A] (1 个活跃)
        → 自动路由到 session-A
        handleSessionMessage(..., "session-A-uuid")
@@ -882,7 +1020,7 @@ T+60s  用户重新启动 Claude Code
        SessionStart hook 触发
        getPending() → 有 1 条 pending
        sendNotification("📥 飞书待处理指令", "1 条: 运行测试")
-       
+
        同时检查 session_queue 是否有该用户的其他 session 遗留消息
        → 取出并自动发送到当前终端
 ```
@@ -964,140 +1102,6 @@ src/
                        #  - Session 管理: session-list/state/queue/send
                        #  - 测试: test-webhook/test-api
 ```
-
----
-
-## 快速开始
-
-### 1. 安装
-
-```bash
-cd claude2feishu
-pnpm install
-```
-
-### 2. 配置
-
-```bash
-cp .env.example .env
-```
-
-编辑 `.env`:
-
-```env
-FEISHU_APP_ID=cli_aXXXXXXXXXXXX
-FEISHU_APP_SECRET=XXXXXXXXXXXXXXXXXXXXXXXX
-# 可选:
-FEISHU_CHAT_ID=oc_xxxxxxxxxxxxxx    # 指定群聊，不填则自动选第一个
-FEISHU_POLL_INTERVAL=3              # 轮询间隔（秒）
-FEISHU_LOG_LEVEL=INFO               # 日志级别
-```
-
-获取方式: [飞书开发者后台](https://open.feishu.cn/app) → 应用 → 凭证与基础信息。
-
-**必需权限:** `im:chat:readonly` / `im:message:read` / `im:message:send`。应用需发布并添加机器人到目标群聊。
-
-### 3. 配置 Claude Code Hooks
-
-在 `~/.claude/settings.json` 中:
-
-```json
-{
-  "hooks": {
-    "SessionStart":       [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 已启动' --type info" }],
-    "Stop":               [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 任务完成' --type success" }],
-    "StopFailure":        [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 异常终止' --type error" }],
-    "PermissionRequest":  [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 等待确认' --type warning" }],
-    "PermissionDenied":   [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 权限拒绝' --type error" }],
-    "Elicitation":        [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 等待输入' --type warning" }],
-    "PostToolUseFailure": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 操作失败' --type error" }]
-  }
-}
-```
-
-### 4. 启动
-
-```bash
-pnpm start        # 后台守护进程
-pnpm status       # 验证运行状态
-```
-
-在飞书群里 @机器人 发一条消息，会收到确认卡片。如果本地有 Claude Code 在 iTerm2 中运行，消息会自动发送到终端。
-
----
-
-## 命令参考
-
-### 守护进程
-
-| 命令 | 说明 |
-|------|------|
-| `pnpm start` | 后台守护进程 |
-| `pnpm stop` | 停止守护进程 |
-| `pnpm restart` | 重启 |
-| `pnpm status` | 状态 + inbox 统计 |
-| `pnpm once` | 单次拉取 (测试) |
-
-### Inbox 管理
-
-| 命令 | 说明 |
-|------|------|
-| `pnpm inbox` | 待处理指令列表 |
-| `pnpm pop` | 弹出下一条指令 |
-| `pnpm done <id>` | 标记完成 |
-| `pnpm reply <id> <text>` | 回复并标记完成 |
-| `pnpm clear` | 清理已完成记录 |
-
-### Session 管理
-
-| 命令 | 说明 |
-|------|------|
-| `pnpm session-list` | 查看活跃 session + 待处理消息 |
-| `pnpm session-state <sid>` | 查看 session 详情 + Claude 状态 |
-| `pnpm session-queue <sid>` | 查看 session 待投递消息 |
-| `pnpm session-send <sid> <msg>` | 手动发送消息到终端 (调试) |
-
-### 测试
-
-| 命令 | 说明 |
-|------|------|
-| `pnpm test-webhook` | 测试 API 发送卡片 |
-| `pnpm test-api` | 测试 API 拉取消息 (不过滤 @) |
-
----
-
-## 日志与诊断
-
-守护进程日志:
-```bash
-tail -f ~/.claude/feishu/feishu_bot.log
-```
-
-Hook 原始数据:
-```bash
-tail -5 ~/.claude/feishu/hook_dump.jsonl
-```
-
-引用消息原始数据（有 parent_id/root_id 时记录）:
-```bash
-cat ~/.claude/feishu/message_dump.jsonl
-```
-
-Card → Session 映射:
-```bash
-tail -10 ~/.claude/feishu/card_session_map.jsonl
-```
-
-Session 状态:
-```bash
-cat ~/.claude/feishu/session_states.json | python3 -m json.tool
-```
-
----
-
-## 技术栈
-
-TypeScript + Node.js 22 + tsx + 飞书 Open API + AppleScript (iTerm2)
 
 ## License
 
