@@ -338,7 +338,11 @@ function errlog(msg: string) {
 const CARD_MAP_FILE = resolve(DATA_DIR, "card_session_map.jsonl");
 
 function ensureMapDir(): void {
-  try { mkdirSync(DATA_DIR, { recursive: true }); } catch { /* */ }
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+  } catch {
+    /* */
+  }
 }
 
 /** 发送卡片后记录 message_id → session_id 映射 */
@@ -346,11 +350,7 @@ export function registerCardSession(messageId: string, sessionId: string): void 
   if (!messageId || !sessionId) return;
   ensureMapDir();
   try {
-    writeFileSync(
-      CARD_MAP_FILE,
-      JSON.stringify({ message_id: messageId, session_id: sessionId, sent_at: new Date().toISOString() }) + "\n",
-      { flag: "a" },
-    );
+    writeFileSync(CARD_MAP_FILE, JSON.stringify({ message_id: messageId, session_id: sessionId, sent_at: new Date().toISOString() }) + "\n", { flag: "a" });
     log(`card→session 已登记: ${messageId.slice(0, 16)}... → ${sessionId.slice(0, 16)}...`, "DEBUG");
   } catch {
     /* ignore */
@@ -367,9 +367,13 @@ export function lookupCardSession(quotedMessageId: string): string {
       try {
         const entry = JSON.parse(lines[i]) as { message_id?: string; session_id?: string };
         if (entry.message_id === quotedMessageId) return entry.session_id ?? "";
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return "";
 }
 

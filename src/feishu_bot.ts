@@ -14,32 +14,64 @@ let running = true;
 
 function loadCkpt(): string {
   if (!existsSync(CHECKPOINT_FILE)) return "";
-  try { return (JSON.parse(readFileSync(CHECKPOINT_FILE, "utf-8")) as { last_msg_id?: string }).last_msg_id ?? ""; } catch { return ""; }
+  try {
+    return (JSON.parse(readFileSync(CHECKPOINT_FILE, "utf-8")) as { last_msg_id?: string }).last_msg_id ?? "";
+  } catch {
+    return "";
+  }
 }
 function saveCkpt(msgId: string, msgTime: string): void {
   writeFileSync(CHECKPOINT_FILE, JSON.stringify({ last_msg_id: msgId, last_time: msgTime }));
 }
 
-export function writePid(): void { writeFileSync(PID_FILE, String(process.pid)); }
-export function removePid(): void { try { unlinkSync(PID_FILE); } catch { /* */ } }
+export function writePid(): void {
+  writeFileSync(PID_FILE, String(process.pid));
+}
+export function removePid(): void {
+  try {
+    unlinkSync(PID_FILE);
+  } catch {
+    /* */
+  }
+}
 export function isRunning(): boolean {
   if (!existsSync(PID_FILE)) return false;
-  try { process.kill(Number(readFileSync(PID_FILE, "utf-8").trim()), 0); return true; }
-  catch { try { unlinkSync(PID_FILE); } catch { /* */ } return false; }
+  try {
+    process.kill(Number(readFileSync(PID_FILE, "utf-8").trim()), 0);
+    return true;
+  } catch {
+    try {
+      unlinkSync(PID_FILE);
+    } catch {
+      /* */
+    }
+    return false;
+  }
 }
 
-process.on("SIGTERM", () => { running = false; log("SIGTERM, 退出中..."); });
-process.on("SIGINT", () => { running = false; log("SIGINT, 退出中..."); });
+process.on("SIGTERM", () => {
+  running = false;
+  log("SIGTERM, 退出中...");
+});
+process.on("SIGINT", () => {
+  running = false;
+  log("SIGINT, 退出中...");
+});
 
 async function processNewMessages(): Promise<string[]> {
   const lastId = loadCkpt();
   const messages = await listReceivedMessages(20, true);
   const newMsgs = [];
-  for (const msg of messages) { if (msg.message_id === lastId) break; newMsgs.push(msg); }
+  for (const msg of messages) {
+    if (msg.message_id === lastId) break;
+    newMsgs.push(msg);
+  }
   if (!newMsgs.length) return [];
 
   for (const msg of newMsgs.reverse()) {
-    const id = msg.message_id, chatId = msg.chat_id, sender = msg.sender?.id ?? "unknown";
+    const id = msg.message_id,
+      chatId = msg.chat_id,
+      sender = msg.sender?.id ?? "unknown";
     const text = extractText(msg);
     if (!text || text.length < 2) continue;
     log(`📨 [${sender}] ${text.slice(0, 80)}`);
@@ -60,7 +92,9 @@ async function processNewMessages(): Promise<string[]> {
             body_content: msg.body?.content ?? "",
           }) + "\n",
         );
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     // ---- Session 路由 ----
@@ -87,7 +121,7 @@ async function processNewMessages(): Promise<string[]> {
       const active = listActive();
       if (active.length >= 1) {
         // 多个 session 时取最近启动的
-        const target = active.reduce((a, b) => a.started_at > b.started_at ? a : b);
+        const target = active.reduce((a, b) => (a.started_at > b.started_at ? a : b));
         log(`  自动路由到活跃 session: ${target.session_id.slice(0, 16)}...`);
         await handleSessionMessage(id, chatId, sender, text, target.session_id);
         routed = true;
@@ -103,29 +137,25 @@ async function processNewMessages(): Promise<string[]> {
     await replyCard(id, "✅ 收到指令", `内容：${text.slice(0, 200)}\nClaude Code 正在处理，请稍候…`);
   }
   saveCkpt(messages[0]?.message_id ?? "", messages[0]?.create_time ?? "");
-  return newMsgs.map(m => m.message_id);
+  return newMsgs.map((m) => m.message_id);
 }
 
 // ---- Session 路由处理 ----
 
-async function handleSessionMessage(
-  msgId: string, chatId: string, sender: string, text: string, sid: string,
-): Promise<void> {
+async function handleSessionMessage(msgId: string, chatId: string, sender: string, text: string, sid: string): Promise<void> {
   log(`🔗 Session 路由: ${sid.slice(0, 16)}...`);
 
   const session = getSession(sid) ?? findByPrefix(sid);
   if (!session) {
     log(`  Session 未注册，入队等待`);
     enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
-    await replyCard(msgId, "⏳ 会话未运行",
-      `目标 Session 当前未运行，消息已暂存。\n\n下次 Claude Code 启动时会提醒你。`, "yellow", sid);
+    await replyCard(msgId, "⏳ 会话未运行", `目标 Session 当前未运行，消息已暂存。\n\n将在终端可用时自动发送到终端。`, "yellow", sid);
     return;
   }
 
   if (!session.transcript_path) {
     enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
-    await replyCard(msgId, "⏳ 无法检测状态",
-      `Session 状态未知，消息已暂存。`, "yellow", sid);
+    await replyCard(msgId, "⏳ 无法检测状态", `Session 状态未知，消息已暂存。`, "yellow", sid);
     return;
   }
 
@@ -143,45 +173,44 @@ async function handleSessionMessage(
     case "waiting": {
       const ok = sendViaITerm(session.tty, text);
       if (ok) {
-        await replyCard(msgId, "✅ 已发送",
-          `消息已自动发送到 Claude Code 终端。\n\n> ${text.slice(0, 200)}`, "green", sid);
+        await replyCard(msgId, "✅ 已发送", `消息已自动发送到 Claude Code 终端。\n\n> ${text.slice(0, 200)}`, "green", sid);
         log(`  ✅ 已发送`);
       } else {
         enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
-        await replyCard(msgId, "⚠️ 发送失败",
-          "无法通过 iTerm2 发送，消息已入队。请检查 iTerm2 是否在运行。", "yellow", sid);
+        await replyCard(msgId, "⚠️ 发送失败", "无法通过 iTerm2 发送，消息已入队。请检查 iTerm2 是否在运行。", "yellow", sid);
       }
       break;
     }
     case "busy": {
       enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
-      await replyCard(msgId, "⏳ Claude 处理中",
-        `Claude Code 正在执行任务，消息已暂存。\n\n任务完成后将自动发送到终端。`, "yellow", sid);
+      await replyCard(msgId, "⏳ Claude 处理中", `Claude Code 正在执行任务，消息已暂存。\n\n任务完成后将自动发送到终端。`, "yellow", sid);
       log(`  入队等待 (busy → waiting 时自动发送)`);
 
       // 后台轮询，等空闲时自动发送
-      startWaitAndSend(sid, session.tty, session.transcript_path, text,
-        (success, reason) => {
-          log(`📬 [${sid.slice(0, 16)}] 延迟发送: ${reason}`);
-          if (success) markDelivered(msgId);
-        });
+      startWaitAndSend(sid, session.tty, session.transcript_path, text, async (success, reason) => {
+        log(`📬 [${sid.slice(0, 16)}] 延迟发送: ${reason}`);
+        if (success) {
+          markDelivered(msgId);
+          await replyCard(msgId, "✅ 已自动发送", `任务完成后消息已自动发送到 Claude Code 终端。\n\n> ${text.slice(0, 200)}`, "green", sid);
+        }
+      });
       break;
     }
     case "gone": {
       enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
-      await replyCard(msgId, "⏳ 会话已退出",
-        `Claude Code 会话已结束，消息已暂存。\n\n下次启动 Claude Code 时会提醒你处理。`, "yellow", sid);
+      await replyCard(msgId, "⏳ 会话已退出", `Claude Code 会话已结束，消息已暂存。\n\n将在终端可用时自动发送到终端。`, "yellow", sid);
       log(`  进程已退出，入队`);
       break;
     }
   }
 }
 
-function makeSessionMsg(
-  id: string, chatId: string, sender: string, content: string, sessionId: string,
-): QueuedMessage {
+function makeSessionMsg(id: string, chatId: string, sender: string, content: string, sessionId: string): QueuedMessage {
   return {
-    id, chat_id: chatId, sender, content,
+    id,
+    chat_id: chatId,
+    sender,
+    content,
     session_id: sessionId,
     received_at: new Date().toISOString(),
     status: "pending",
@@ -192,11 +221,23 @@ export async function pollLoop(): Promise<number> {
   log(`🚀 监听启动 (间隔 ${config.pollInterval}s)`);
   let errors = 0;
   while (running) {
-    try { const ids = await processNewMessages(); if (ids.length) log(`✓ ${ids.length} 条, 待处理: ${pendingCount()}`); errors = 0; }
-    catch (e) { errors++; log(`异常(${errors}): ${e}`, "ERROR"); if (errors > 10) { log("暂停 30s", "WARN"); await sleep(30_000); errors = 0; } }
+    try {
+      const ids = await processNewMessages();
+      if (ids.length) log(`✓ ${ids.length} 条, 待处理: ${pendingCount()}`);
+      errors = 0;
+    } catch (e) {
+      errors++;
+      log(`异常(${errors}): ${e}`, "ERROR");
+      if (errors > 10) {
+        log("暂停 30s", "WARN");
+        await sleep(30_000);
+        errors = 0;
+      }
+    }
     await sleep(config.pollInterval * 1000);
   }
-  log("监听已停止"); return 0;
+  log("监听已停止");
+  return 0;
 }
 
 export async function runOnce(): Promise<void> {
@@ -204,4 +245,6 @@ export async function runOnce(): Promise<void> {
   console.log(`处理 ${ids.length} 条新消息`);
 }
 
-function sleep(ms: number): Promise<void> { return new Promise(r => setTimeout(r, ms)); }
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}

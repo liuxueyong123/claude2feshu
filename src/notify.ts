@@ -6,7 +6,7 @@ import { sendChatCard, replyCard } from "./feishu_api.js";
 import { getPending, popNext, markDone } from "./inbox.js";
 import { registerSession, markIdle, isProcessAlive, getSession } from "./session_state.js";
 import { getPending as getSessionPending, dequeueAll, listPendingSessions, enqueue as enqueueSession } from "./session_queue.js";
-import { findClaudeProcess, sendViaITerm } from "./terminal.js";
+import { findClaudeProcess, findMyClaudeProcess, sendViaITerm } from "./terminal.js";
 import { log } from "./logger.js";
 import { DATA_DIR } from "./config.js";
 import { readFileSync, appendFileSync, existsSync } from "node:fs";
@@ -90,7 +90,7 @@ function buildContext(event: HookEvent): string {
   // 会话 ID
   const sid = event.session_id ?? "";
   if (sid) {
-    lines.push(`🔗 **会话：** \`${sid}\``);
+    lines.push(`🔗 **会话 ID：** \`${sid}\``);
   }
 
   // ============================================================
@@ -106,7 +106,7 @@ function buildContext(event: HookEvent): string {
       // 会话正常结束时展示最终输出，方便了解完成状态
       const output = getModelOutput(event);
       if (output) {
-        lines.push(`💬 **模型输出：** ${output}`);
+        lines.push(`💬 **模型输出：**\n${wrapInCodeBlock(output)}`);
       }
       break;
     }
@@ -126,7 +126,7 @@ function buildContext(event: HookEvent): string {
       // 展示模型输出，帮助理解 Claude 为什么请求此操作
       const output = getModelOutput(event);
       if (output) {
-        lines.push(`💬 **模型输出：** ${output}`);
+        lines.push(`💬 **模型输出：**\n${wrapInCodeBlock(output)}`);
       }
       break;
     }
@@ -181,6 +181,20 @@ function toolLabel(tool: string): string {
 function clip(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;
 }
+
+/** 按 UTF-8 字节数安全截断，不切断多字节字符 */
+function clipBytes(s: string, maxBytes: number): string {
+  if (Buffer.byteLength(s, "utf-8") <= maxBytes) return s;
+  let result = "";
+  for (const ch of s) {
+    if (Buffer.byteLength(result + ch, "utf-8") > maxBytes - 3) break; // -3 留给 "…"
+    result += ch;
+  }
+  return result + "…";
+}
+
+/** 飞书卡片 JSON 上限 30KB，留出结构开销后内容的保守字节上限 */
+const CARD_CONTENT_MAX_BYTES = 24000; // 24KB，留 6KB 给卡片结构 + JSON 转义开销
 
 /**
  * 获取主机名。macOS 优先使用友好名称（如 "lxy的MacBook Pro"），
@@ -252,7 +266,7 @@ function getModelOutput(event: HookEvent): string {
         .split("\n")
         .filter((l) => l.trim())
         .join("\n");
-      return clip(cleaned, 200);
+      return clipBytes(cleaned, 5000);
     }
     return "";
   }
@@ -281,7 +295,7 @@ function getModelOutput(event: HookEvent): string {
         .split("\n")
         .filter((l) => l.trim())
         .join("\n");
-      return clip(cleaned, 200);
+      return clipBytes(cleaned, 5000);
     }
   } catch {
     /* ignore */
@@ -360,8 +374,18 @@ export function sendNotification(title: string, message: string, type = "info", 
   return sendChatCard(title, message, COLORS[type] ?? "blue", sessionId);
 }
 
+/** 将文本用代码块包裹，同时转义内部 code fence 避免飞书 markdown 格式错误 */
+function wrapInCodeBlock(text: string): string {
+  if (!text) return text;
+  // 内容中已有的 ``` 用零宽空格断开，避免提前关闭外层代码块
+  const escaped = text.replace(/```/g, "``​`");
+  return "```\n" + escaped + "\n```";
+}
+
 export function replyToMessage(msgId: string, text: string, sessionId = ""): Promise<string> {
-  return replyCard(msgId, "✅ Claude Code 执行结果", `${text}\n\n— Claude Code`, "green", sessionId);
+  // 按字节截断到卡片上限，保留代码块包裹结构
+  const body = wrapInCodeBlock(clipBytes(text, CARD_CONTENT_MAX_BYTES));
+  return replyCard(msgId, "✅ Claude Code 执行结果", `${body}\n\n— Claude Code`, "green", sessionId);
 }
 
 export function checkInboxText(): string {
@@ -426,9 +450,10 @@ async function main(): Promise<void> {
     }
   }
 
-  // 拼接上下文
+  // 拼接上下文：先给 ctx 留出空间，剩余字节全给 message
   const ctx = buildContext(event);
-  const fullMessage = message + ctx;
+  const msgMaxBytes = Math.max(4000, CARD_CONTENT_MAX_BYTES - Buffer.byteLength(ctx, "utf-8"));
+  const fullMessage = clipBytes(message, msgMaxBytes) + ctx;
 
   await sendNotification(title, fullMessage, type, event.session_id ?? "");
 
@@ -436,8 +461,9 @@ async function main(): Promise<void> {
   const sid = event.session_id ?? "";
 
   if (event.hook_event_name === "SessionStart" && sid) {
-    // 注册 session：查找 Claude Code 进程获取 PID 和 TTY
-    const proc = findClaudeProcess();
+    // 注册 session：沿进程树向上查找触发本 hook 的 Claude Code 进程
+    // 使用 findMyClaudeProcess() 而非 findClaudeProcess()，确保多窗口时各自定位到正确的进程
+    const proc = findMyClaudeProcess();
     if (proc) {
       registerSession({
         session_id: sid,
@@ -507,8 +533,7 @@ async function main(): Promise<void> {
         const failCount = results.length - successCount;
         await sendNotification(
           `📬 已发送 ${successCount} 条队列消息`,
-          results.slice(-10).join("\n") +
-            (failCount > 0 ? `\n\n⚠️ ${failCount} 条发送失败，已重新入队` : ""),
+          results.slice(-10).join("\n") + (failCount > 0 ? `\n\n⚠️ ${failCount} 条发送失败，已重新入队` : ""),
           successCount === results.length ? "success" : "warning",
           sid,
         );
@@ -517,15 +542,20 @@ async function main(): Promise<void> {
   }
 
   // Stop / StopFailure / SessionEnd: 标记空闲 + 检查队列
+  // 延时 6 秒再检查，给 startWaitAndSend 轮询投递留出窗口
   if (sid && (event.hook_event_name === "Stop" || event.hook_event_name === "StopFailure" || event.hook_event_name === "SessionEnd")) {
     markIdle(sid);
+    await new Promise((r) => setTimeout(r, 6000));
     const sq = getSessionPending(sid);
     if (sq.length) {
       await sendNotification(
         "📬 任务结束，待处理消息",
         `${sq.length} 条消息等待处理：\n` +
-          sq.slice(-3).map((m) => `- [${m.sender}]: ${m.content.slice(0, 100)}`).join("\n") +
-          `\n\n下次启动 Claude Code 时将自动发送到终端。`,
+          sq
+            .slice(-3)
+            .map((m) => `- [${m.sender}]: ${m.content.slice(0, 100)}`)
+            .join("\n") +
+          `\n\n将在终端空闲时自动发送到终端。`,
         "warning",
         sid,
       );

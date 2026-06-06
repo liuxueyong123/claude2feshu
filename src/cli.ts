@@ -77,7 +77,7 @@ async function main(): Promise<void> {
     case "pop": { const c = popNext(); console.log(c ? `[${c.sender}] ${c.content}\n(ID: ${c.id})` : "📭 无"); break; }
     case "done": a3 ? (markDone(a3), console.log(`✅ ${a3}`)) : console.error("用法: done <id>"); break;
     case "reply":
-      if (a3 && a4) { const ok = await replyCard(a3, "✅ 结果", `${a4}\n\n— Claude Code`, "green"); ok ? (markDone(a3), console.log("✅")) : console.error("❌"); }
+      if (a3 && a4) { const escaped = a4.replace(/```/g, '``​`'); const ok = await replyCard(a3, "✅ 结果", `\`\`\`\n${escaped}\n\`\`\`\n\n— Claude Code`, "green"); ok ? (markDone(a3), console.log("✅")) : console.error("❌"); }
       else console.error("用法: reply <id> <text>"); break;
     case "clear": console.log(`🧹 ${clearDone()} 条`); break;
     case "test-webhook": console.log(await sendChatCard("🧪 测试", "webhook 正常 ✅") ? "✅ OK" : "❌ FAIL"); break;

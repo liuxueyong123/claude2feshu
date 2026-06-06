@@ -199,3 +199,55 @@ export function findClaudeProcess(): { pid: number; tty: string } | null {
     return null;
   }
 }
+
+/**
+ * 从当前进程向上遍历进程树，找到触发 hook 的 Claude Code 进程。
+ *
+ * 与 findClaudeProcess() 不同，此函数不会错误匹配到其他 Claude 窗口。
+ * 原理: hook 作为 Claude Code 的子进程运行，沿着 PPID 链向上查找即可定位。
+ *
+ * 进程树示意:
+ *   Claude Code (ttys002)          ← 目标
+ *     └─ sh -c "notify.sh ..."     ← PPID 链经过这里
+ *          └─ node notify.ts       ← 当前进程
+ */
+export function findMyClaudeProcess(): { pid: number; tty: string } | null {
+  let currentPid = process.pid;
+
+  for (let i = 0; i < 10; i++) {
+    try {
+      const ppidStr = execSync(`ps -p ${currentPid} -o ppid=`, {
+        encoding: "utf-8",
+        timeout: 2000,
+      }).trim();
+      const ppid = Number(ppidStr);
+      if (!ppid || ppid <= 1) break;
+
+      const cmd = execSync(`ps -p ${ppid} -o command=`, {
+        encoding: "utf-8",
+        timeout: 2000,
+      }).trim();
+
+      // 匹配 Claude 进程（排除本项目、hook、plugin 子进程）
+      if (
+        /\bclaude\b/.test(cmd) &&
+        !cmd.includes("claude2feishu") &&
+        !cmd.includes("hook") &&
+        !cmd.includes("plugin")
+      ) {
+        const tty = execSync(`ps -p ${ppid} -o tty=`, {
+          encoding: "utf-8",
+          timeout: 2000,
+        }).trim();
+        return { pid: ppid, tty: tty.replace("?", "") };
+      }
+
+      currentPid = ppid;
+    } catch {
+      break;
+    }
+  }
+
+  // 回退: 进程树遍历失败时，尝试全局搜索
+  return findClaudeProcess();
+}

@@ -2,6 +2,42 @@
 
 Claude Code ↔ 飞书双向通信。在飞书群里 **@机器人** 发送指令，Claude Code 执行并将结果回传。
 
+这个项目由两条链路组成：
+
+- **飞书 → Claude Code**: 守护进程轮询飞书群消息，按引用卡片或活跃 session 路由，再通过 iTerm2 AppleScript 写入 Claude Code 终端。
+- **Claude Code → 飞书**: Claude Code Hooks 调用 `notify.sh`，把 session 生命周期、权限请求、失败信息和最终输出发送为飞书卡片。
+
+阅读建议：
+
+- 只想跑起来：看 [快速开始](#快速开始)、[命令参考](#命令参考)、[日志与诊断](#日志与诊断)。
+- 想理解完整机制：从 [系统架构](#系统架构) 开始，再看 [入站流程](#入站流程-飞书--claude-code-终端)、[出站流程](#出站流程-claude-code--飞书群) 和 [完整场景时序](#完整场景时序)。
+- 想排查路由问题：重点看 `card_session_map.jsonl`、`session_states.json`、`feishu_session_queue.jsonl`、`hook_dump.jsonl` 和 `message_dump.jsonl`。
+
+## 目录
+
+- [前置要求](#前置要求)
+- [快速开始](#快速开始)
+- [命令参考](#命令参考)
+- [日志与诊断](#日志与诊断)
+- [系统架构](#系统架构)
+- [入站流程 (飞书 → Claude Code 终端)](#入站流程-飞书--claude-code-终端)
+- [出站流程 (Claude Code → 飞书群)](#出站流程-claude-code--飞书群)
+- [Session 状态管理详解](#session-状态管理详解)
+- [Session Queue (延迟投递队列)](#session-queue-延迟投递队列)
+- [通用 Inbox (回退队列)](#通用-inbox-回退队列)
+- [detectState() — Claude 状态检测详解](#detectstate--claude-状态检测详解)
+- [findMyClaudeProcess() / findClaudeProcess() — 进程发现详解](#findmyclaudeprocess--findclaudeprocess--进程发现详解)
+- [完整场景时序](#完整场景时序)
+- [项目文件结构](#项目文件结构)
+
+## 前置要求
+
+- Node.js 22+ 和 pnpm。
+- macOS + iTerm2。自动投递依赖 AppleScript 枚举 iTerm2 session 并匹配 TTY。
+- 本地 Claude Code，且能配置 `~/.claude/settings.json` hooks。
+- 飞书自建应用：已添加机器人能力、发布应用、把机器人加入目标群。
+- 飞书应用权限：`im:chat:readonly` / `im:message:read` / `im:message:send`。
+
 ## 快速开始
 
 ### 1. 安装
@@ -25,12 +61,14 @@ FEISHU_APP_SECRET=XXXXXXXXXXXXXXXXXXXXXXXX
 # 可选:
 FEISHU_CHAT_ID=oc_xxxxxxxxxxxxxx    # 指定群聊，不填则自动选第一个
 FEISHU_POLL_INTERVAL=3              # 轮询间隔（秒）
-FEISHU_LOG_LEVEL=INFO               # 日志级别
+FEISHU_LOG_LEVEL=INFO               # 日志级别配置项
 ```
 
 获取方式: [飞书开发者后台](https://open.feishu.cn/app) → 应用 → 凭证与基础信息。
 
 **必需权限:** `im:chat:readonly` / `im:message:read` / `im:message:send`。应用需发布并添加机器人到目标群聊。
+
+注意：`.env` 包含飞书应用凭证，已被 `.gitignore` 忽略，不要提交到仓库。
 
 ### 3. 配置 Claude Code Hooks
 
@@ -49,6 +87,8 @@ FEISHU_LOG_LEVEL=INFO               # 日志级别
   }
 }
 ```
+
+如果项目路径不是 `/Users/lxy/Documents/claude2feishu`，需要同步修改 `notify.sh` 里的 `cd` 路径，或直接在 hook command 中调用正确路径下的 `npx tsx src/notify.ts`。
 
 ### 4. 启动
 
@@ -127,6 +167,12 @@ Card → Session 映射:
 tail -10 ~/.claude/feishu/card_session_map.jsonl
 ```
 
+飞书 API 错误日志:
+
+```bash
+tail -20 ~/.claude/feishu/feishu_error.log
+```
+
 Session 状态:
 
 ```bash
@@ -173,6 +219,7 @@ TypeScript + Node.js 22 + tsx + 飞书 Open API + AppleScript (iTerm2)
 | `feishu_checkpoint.json`     | JSON         | 轮询 checkpoint (最后处理的消息 ID)                    |
 | `feishu_bot.pid`             | 文本         | 守护进程 PID                                           |
 | `feishu_bot.log`             | 文本 (追加)  | 守护进程日志                                           |
+| `feishu_error.log`           | 文本 (追加)  | 飞书 API 发送失败等 hook 环境错误诊断                  |
 | `hook_dump.jsonl`            | JSONL (追加) | Hook 原始 JSON 诊断数据                                |
 | `message_dump.jsonl`         | JSONL (追加) | 引用消息原始数据诊断                                   |
 
@@ -614,14 +661,31 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
 #### SessionStart
 
 ```
-1. findClaudeProcess():
-   ps -eo pid,tty,command
-     | grep -E "claude( |$)"     ← 匹配 claude 命令
-     | grep -v grep               ← 排除 grep 自身
-     | grep -v claude2feishu     ← 排除本项目
-     | grep -v hook               ← 排除 hook 子进程
-     | grep -v plugin             ← 排除 plugin 子进程
-   取第一行 → 解析 PID (第1列) 和 TTY (第2列)
+1. findMyClaudeProcess():
+   从当前 notify.ts 进程开始，沿 PPID 链向上最多查找 10 层:
+     node notify.ts
+       ↑ sh -c "./notify.sh ..."
+       ↑ Claude Code 主进程
+
+   每一层执行:
+     ps -p <pid> -o ppid=
+     ps -p <ppid> -o command=
+
+   匹配条件:
+     - command 中包含独立单词 claude
+     - 不包含 claude2feishu
+     - 不包含 hook
+     - 不包含 plugin
+
+   命中后:
+     ps -p <ppid> -o tty=
+     → 返回 { pid: <Claude PID>, tty: <TTY> }
+
+   若沿 PPID 链查找失败:
+     → 回退到 findClaudeProcess()
+     → 全局 ps 搜索第一个 Claude Code 进程
+
+   这样多窗口同时运行 Claude Code 时，优先定位触发当前 hook 的那一个 session。
 
 2. registerSession({
      session_id: sid,
@@ -660,10 +724,12 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
 
 2. getSessionPending(sid):
    检查 session_queue 中是否有该 session 的待处理消息
+   注意: notify.ts 会先等待 6 秒，再检查队列
+        这给 startWaitAndSend() 的 busy→waiting 自动投递留出时间窗口
    有 → 发送提醒卡片:
      "📬 任务结束，待处理消息"
      "N 条消息等待处理"
-     "下次启动 Claude Code 时将自动发送到终端。"
+     "将在终端空闲时自动发送到终端。"
 ```
 
 ---
@@ -689,7 +755,8 @@ session_states.json → SessionState[]:
 
 ```
 SessionStart hook 触发:
-  → findClaudeProcess() 获取 PID/TTY
+  → findMyClaudeProcess() 沿 PPID 链定位当前 Claude Code 进程
+    → 如失败则回退 findClaudeProcess() 全局搜索
   → registerSession({status: "active"})
   → 如果同一 PID 有旧 session → 旧 session 标记为 idle
 
@@ -855,7 +922,38 @@ detectState(transcriptPath):
 
 ---
 
-## findClaudeProcess() — 进程发现详解
+## findMyClaudeProcess() / findClaudeProcess() — 进程发现详解
+
+```
+findMyClaudeProcess():
+
+  currentPid = process.pid
+
+  for i in 0..9:
+    ppid = ps -p currentPid -o ppid=
+    cmd  = ps -p ppid -o command=
+
+    if cmd 匹配:
+       /\bclaude\b/
+       且不包含 claude2feishu / hook / plugin
+    then:
+       tty = ps -p ppid -o tty=
+       return { pid: ppid, tty: tty.replace("?", "") }
+
+    currentPid = ppid
+
+  return findClaudeProcess()
+
+进程树示意:
+
+  Claude Code (ttys002)          ← 目标
+    └─ sh -c "notify.sh ..."     ← PPID 链经过这里
+         └─ node notify.ts       ← 当前进程
+```
+
+`findMyClaudeProcess()` 是 SessionStart hook 的主路径。它利用 hook 子进程关系定位“触发当前 hook 的 Claude Code 进程”，避免多窗口时误选其他 Claude Code 终端。
+
+`findClaudeProcess()` 是回退路径，全局搜索第一个匹配的 Claude Code 进程:
 
 ```
 ps -eo pid,tty,command
@@ -944,7 +1042,8 @@ T+31s  Claude 开始处理第二条消息
 ```
 T+0s   用户在 iTerm2 启动 Claude Code
        SessionStart hook 触发
-       notify.ts: findClaudeProcess() → {pid: 12345, tty: "ttys002"}
+       notify.ts: findMyClaudeProcess() → {pid: 12345, tty: "ttys002"}
+         (沿 PPID 链失败时回退 findClaudeProcess())
        notify.ts: registerSession({status: "active", pid: 12345, tty: "ttys002"})
        notify.ts: sendChatCard(" 已启动", ...) → card om_start
        registerCardSession("om_start", "session-uuid")
@@ -1080,7 +1179,8 @@ src/
 │                      #  - detectState: 读 transcript 判断 Claude 状态
 │                      #  - sendViaITerm: AppleScript 发送文本
 │                      #  - startWaitAndSend: 轮询等待后发送 (busy→waiting)
-│                      #  - findClaudeProcess: ps 查找 Claude Code 进程
+│                      #  - findMyClaudeProcess: 沿 PPID 链定位当前 hook 所属 Claude 进程
+│                      #  - findClaudeProcess: 全局 ps 查找 Claude Code 进程（回退）
 │                      #  - detectTTY: tty 命令获取当前终端名
 │                      #  - escapeAppleScript: AppleScript 字符串转义
 ├── notify.ts          # Hook 入口 + Session 生命周期管理
