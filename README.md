@@ -167,7 +167,7 @@ src/
 └── cli.ts             # 统一 CLI
 ```
 
-数据文件 (均在 `~/.claude/` 下):
+数据文件 (均在 `~/.claude/feishu/` 下):
 
 | 文件 | 用途 |
 |------|------|
@@ -176,21 +176,21 @@ src/
 | `feishu_inbox.jsonl` | 通用指令队列 |
 | `feishu_checkpoint.json` | 轮询 checkpoint (最后处理的消息 ID) |
 | `feishu_bot.pid` | 守护进程 PID |
-| `scripts/feishu_bot.log` | 守护进程日志 |
+| `feishu_bot.log` | 守护进程日志 |
 
 ## 日志
 
-守护进程日志位置: `~/.claude/scripts/feishu_bot.log`
+守护进程日志位置: `~/.claude/feishu/feishu_bot.log`
 
 ```bash
 # 实时查看
-tail -f ~/.claude/scripts/feishu_bot.log
+tail -f ~/.claude/feishu/feishu_bot.log
 
 # 最近 50 行
-tail -50 ~/.claude/scripts/feishu_bot.log
+tail -50 ~/.claude/feishu/feishu_bot.log
 ```
 
-Hook 诊断数据: `~/.claude/hook_dump.jsonl`
+Hook 诊断数据: `~/.claude/feishu/hook_dump.jsonl`
 
 ## Claude Code Hook 配置
 

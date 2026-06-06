@@ -39,13 +39,13 @@ export const config = {
   logLevel:     process.env.FEISHU_LOG_LEVEL  || fileEnv.FEISHU_LOG_LEVEL  || "INFO",
 } as const;
 
-// ---- 数据路径（inbox/checkpoint/pid 放 ~/.claude 下便于 Claude Code 访问） ----
+// ---- 数据路径（运行时数据集中到 ~/.claude/feishu/ 下） ----
 
-export const DATA_DIR = resolve(HOME, ".claude");
+export const DATA_DIR = resolve(HOME, ".claude", "feishu");
 export const INBOX_FILE = resolve(DATA_DIR, "feishu_inbox.jsonl");
 export const CHECKPOINT_FILE = resolve(DATA_DIR, "feishu_checkpoint.json");
 export const PID_FILE = resolve(DATA_DIR, "feishu_bot.pid");
-export const LOG_FILE = resolve(DATA_DIR, "scripts", "feishu_bot.log");
+export const LOG_FILE = resolve(DATA_DIR, "feishu_bot.log");
 
 // ---- 常量 ----
 

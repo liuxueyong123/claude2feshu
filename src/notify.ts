@@ -4,10 +4,11 @@
  */
 import { sendChatCard, replyCard } from "./feishu_api.js";
 import { getPending, popNext, markDone } from "./inbox.js";
-import { registerSession, markIdle } from "./session_state.js";
-import { getPending as getSessionPending } from "./session_queue.js";
-import { findClaudeProcess } from "./terminal.js";
+import { registerSession, markIdle, isProcessAlive, getSession } from "./session_state.js";
+import { getPending as getSessionPending, dequeueAll, listPendingSessions, enqueue as enqueueSession } from "./session_queue.js";
+import { findClaudeProcess, sendViaITerm } from "./terminal.js";
 import { log } from "./logger.js";
+import { DATA_DIR } from "./config.js";
 import { readFileSync, appendFileSync, existsSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import { execSync } from "node:child_process";
@@ -355,12 +356,12 @@ function describeToolInput(tool: string, input: Record<string, unknown>): string
 // 公开 API
 // ============================================================
 
-export function sendNotification(title: string, message: string, type = "info"): Promise<boolean> {
-  return sendChatCard(title, message, COLORS[type] ?? "blue");
+export function sendNotification(title: string, message: string, type = "info", sessionId = ""): Promise<string> {
+  return sendChatCard(title, message, COLORS[type] ?? "blue", sessionId);
 }
 
-export function replyToMessage(msgId: string, text: string): Promise<boolean> {
-  return replyCard(msgId, "✅ Claude Code 执行结果", `${text}\n\n— Claude Code`, "green");
+export function replyToMessage(msgId: string, text: string, sessionId = ""): Promise<string> {
+  return replyCard(msgId, "✅ Claude Code 执行结果", `${text}\n\n— Claude Code`, "green", sessionId);
 }
 
 export function checkInboxText(): string {
@@ -412,7 +413,7 @@ async function main(): Promise<void> {
   if (event.hook_event_name) {
     try {
       appendFileSync(
-        resolve(process.env.HOME ?? "/tmp", ".claude", "hook_dump.jsonl"),
+        resolve(DATA_DIR, "hook_dump.jsonl"),
         JSON.stringify({
           _ts: new Date().toISOString(),
           _event: event.hook_event_name,
@@ -429,7 +430,7 @@ async function main(): Promise<void> {
   const ctx = buildContext(event);
   const fullMessage = message + ctx;
 
-  await sendNotification(title, fullMessage, type);
+  await sendNotification(title, fullMessage, type, event.session_id ?? "");
 
   // ---- Session 生命周期管理 ----
   const sid = event.session_id ?? "";
@@ -461,19 +462,57 @@ async function main(): Promise<void> {
             .map((c) => `- [${c.sender}]: ${c.content.slice(0, 100)}`)
             .join("\n"),
         "warning",
+        sid,
       );
     }
 
-    // 检查 session 专用队列
-    const sq = getSessionPending(sid);
-    if (sq.length) {
-      await sendNotification(
-        "📬 Session 待处理消息",
-        `${sq.length} 条消息等待处理：\n` +
-          sq.slice(-3).map((m) => `- [${m.sender}]: ${m.content.slice(0, 100)}`).join("\n") +
-          `\n\n可在终端中处理，或重新启动该 session。`,
-        "warning",
-      );
+    // 自动发送 session 队列中的待处理消息
+    // 策略: 遍历所有 pending session，如果目标 session 已死或就是当前 session，则发送到当前终端
+    if (proc) {
+      const allPending = listPendingSessions();
+      const toSend: Array<{ session_id: string; count: number; messages: ReturnType<typeof dequeueAll> }> = [];
+
+      for (const { session_id: targetSid, count } of allPending) {
+        if (targetSid === sid) {
+          // 精确匹配当前 session
+          const msgs = dequeueAll(sid);
+          if (msgs.length) toSend.push({ session_id: sid, count, messages: msgs });
+        } else {
+          // 检查目标 session 进程是否还活着
+          const targetSession = getSession(targetSid);
+          if (!targetSession || !isProcessAlive(targetSession.pid)) {
+            // 目标 session 已死，消息路由到当前 session
+            const msgs = dequeueAll(targetSid);
+            if (msgs.length) toSend.push({ session_id: targetSid, count, messages: msgs });
+          }
+          // 目标 session 还活着 → 跳过，让 feishu_bot 或 startWaitAndSend 处理
+        }
+      }
+
+      if (toSend.length) {
+        const allMsgs = toSend.flatMap((t) => t.messages);
+        log(`📬 SessionStart: 发送 ${allMsgs.length} 条队列消息 (来自 ${toSend.length} 个 session)`);
+
+        const results: string[] = [];
+        for (const m of allMsgs) {
+          const ok = sendViaITerm(proc.tty, m.content);
+          results.push(`${ok ? "✅" : "❌"} [${m.sender}]: ${m.content.slice(0, 80)}`);
+          if (!ok) {
+            // 发送失败，重新入队
+            enqueueSession({ ...m, status: "pending" });
+          }
+        }
+
+        const successCount = results.filter((r) => r.startsWith("✅")).length;
+        const failCount = results.length - successCount;
+        await sendNotification(
+          `📬 已发送 ${successCount} 条队列消息`,
+          results.slice(-10).join("\n") +
+            (failCount > 0 ? `\n\n⚠️ ${failCount} 条发送失败，已重新入队` : ""),
+          successCount === results.length ? "success" : "warning",
+          sid,
+        );
+      }
     }
   }
 
@@ -486,8 +525,9 @@ async function main(): Promise<void> {
         "📬 任务结束，待处理消息",
         `${sq.length} 条消息等待处理：\n` +
           sq.slice(-3).map((m) => `- [${m.sender}]: ${m.content.slice(0, 100)}`).join("\n") +
-          `\n\n请启动 Claude Code 新会话来处理。`,
+          `\n\n下次启动 Claude Code 时将自动发送到终端。`,
         "warning",
+        sid,
       );
     }
   }

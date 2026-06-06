@@ -1,12 +1,12 @@
 /**
  * Session 状态追踪 — 维护 session_id → 进程映射
  *
- * 存储: ~/.claude/session_states.json (JSON 数组)
+ * 存储: ~/.claude/feishu/session_states.json (JSON 数组)
  * 由 notify.ts hook 写入，由 feishu_bot.ts 读取。
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { homedir } from "node:os";
+import { DATA_DIR } from "./config.js";
 
 // ---- 类型 ----
 
@@ -22,7 +22,6 @@ export interface SessionState {
 
 // ---- 存储路径 ----
 
-const DATA_DIR = resolve(homedir(), ".claude");
 const STATE_FILE = resolve(DATA_DIR, "session_states.json");
 
 function ensureDir(): void {
@@ -108,9 +107,9 @@ export function findByPrefix(prefix: string): SessionState | null {
   return states.find((s) => s.session_id.startsWith(prefix)) ?? null;
 }
 
-/** 列出所有活跃 session */
+/** 列出所有可用 session（进程存活即可，不管 active/idle） */
 export function listActive(): SessionState[] {
-  return load().filter((s) => s.status === "active" && isProcessAlive(s.pid));
+  return load().filter((s) => (s.status === "active" || s.status === "idle") && isProcessAlive(s.pid));
 }
 
 /** 检查进程是否存活 */

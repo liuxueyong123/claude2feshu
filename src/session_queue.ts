@@ -1,13 +1,13 @@
 /**
  * Session 专用消息队列 — 管理 session 维度的延迟投递消息
  *
- * 存储: ~/.claude/feishu_session_queue.jsonl
+ * 存储: ~/.claude/feishu/feishu_session_queue.jsonl
  * 写入: feishu_bot.ts (检测到引用消息且 session 非 waiting 时)
  * 读取: notify.ts (Stop/StopFailure/SessionEnd 时取出), feishu_bot.ts (投递后标记)
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { homedir } from "node:os";
+import { DATA_DIR } from "./config.js";
 
 // ---- 类型 ----
 
@@ -23,7 +23,6 @@ export interface QueuedMessage {
 
 // ---- 存储路径 ----
 
-const DATA_DIR = resolve(homedir(), ".claude");
 const QUEUE_FILE = resolve(DATA_DIR, "feishu_session_queue.jsonl");
 
 function ensureDir(): void {
@@ -82,6 +81,16 @@ export function pendingCount(sid: string): number {
 /** 获取指定 session 的所有 pending 消息（不取出） */
 export function getPending(sid: string): QueuedMessage[] {
   return load().filter((i) => i.session_id === sid && i.status === "pending");
+}
+
+/** 标记单条消息为 delivered（startWaitAndSend 成功回调用） */
+export function markDelivered(msgId: string): void {
+  const items = load();
+  const item = items.find((i) => i.id === msgId && i.status === "pending");
+  if (item) {
+    item.status = "delivered";
+    save(items);
+  }
 }
 
 /** 列出所有有 pending 消息的 session */

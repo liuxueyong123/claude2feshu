@@ -1,12 +1,13 @@
 /** 飞书消息轮询守护进程 — 后台拉取 @消息写入 inbox */
-import { writeFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
-import { config, PID_FILE, CHECKPOINT_FILE } from "./config.js";
+import { writeFileSync, existsSync, readFileSync, unlinkSync, appendFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { config, PID_FILE, CHECKPOINT_FILE, DATA_DIR } from "./config.js";
 import { log } from "./logger.js";
-import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, getMessage, extractSessionId } from "./feishu_api.js";
+import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, lookupCardSession } from "./feishu_api.js";
 import { enqueueCommand, pendingCount } from "./inbox.js";
 import { detectState, sendViaITerm, startWaitAndSend } from "./terminal.js";
-import { getSession, findByPrefix, listActive } from "./session_state.js";
-import { enqueue as enqueueSession } from "./session_queue.js";
+import { getSession, findByPrefix, listActive, isProcessAlive } from "./session_state.js";
+import { enqueue as enqueueSession, markDelivered } from "./session_queue.js";
 import type { QueuedMessage } from "./session_queue.js";
 
 let running = true;
@@ -43,25 +44,41 @@ async function processNewMessages(): Promise<string[]> {
     if (!text || text.length < 2) continue;
     log(`📨 [${sender}] ${text.slice(0, 80)}`);
 
+    // ---- 诊断：保存原始消息（引用/回复消息时） ----
+    const rawParent = (msg as unknown as Record<string, unknown>).parent_id as string | undefined;
+    const rawRoot = (msg as unknown as Record<string, unknown>).root_id as string | undefined;
+    if (rawParent || rawRoot) {
+      try {
+        appendFileSync(
+          resolve(DATA_DIR, "message_dump.jsonl"),
+          JSON.stringify({
+            _ts: new Date().toISOString(),
+            message_id: msg.message_id,
+            msg_type: msg.msg_type,
+            parent_id: rawParent ?? "",
+            root_id: rawRoot ?? "",
+            body_content: msg.body?.content ?? "",
+          }) + "\n",
+        );
+      } catch { /* ignore */ }
+    }
+
     // ---- Session 路由 ----
     let routed = false;
 
     // 方式 1: 引用消息中提取 session ID（精确路由到指定 session）
+    // 优先查本地 card→session 映射（飞书 API 对 interactive 卡片返回降级内容，无法从 body 解析）
     const quoteId = getQuotedMessageId(msg);
+    log(`  quoteId=${quoteId || "(空)"} parent_id=${rawParent || "(空)"} root_id=${rawRoot || "(空)"}`);
     if (quoteId) {
       log(`  引用消息: ${quoteId}`);
-      const quotedMsg = await getMessage(quoteId);
-      if (quotedMsg) {
-        const sid = extractSessionId(quotedMsg.body?.content ?? "");
-        if (sid) {
-          log(`  提取到 session: ${sid.slice(0, 16)}...`);
-          await handleSessionMessage(id, chatId, sender, text, sid);
-          routed = true;
-        } else {
-          log(`  未提取到 session ID`, "DEBUG");
-        }
+      const sid = lookupCardSession(quoteId);
+      if (sid) {
+        log(`  查找到 session: ${sid.slice(0, 16)}...`);
+        await handleSessionMessage(id, chatId, sender, text, sid);
+        routed = true;
       } else {
-        log(`  获取引用消息失败`, "WARN");
+        log(`  未在映射中找到 session ID`, "DEBUG");
       }
     }
 
@@ -101,18 +118,25 @@ async function handleSessionMessage(
     log(`  Session 未注册，入队等待`);
     enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
     await replyCard(msgId, "⏳ 会话未运行",
-      `目标 Session 当前未运行，消息已暂存。\n\n下次 Claude Code 启动时会提醒你。`, "yellow");
+      `目标 Session 当前未运行，消息已暂存。\n\n下次 Claude Code 启动时会提醒你。`, "yellow", sid);
     return;
   }
 
   if (!session.transcript_path) {
     enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
     await replyCard(msgId, "⏳ 无法检测状态",
-      `Session 状态未知，消息已暂存。`, "yellow");
+      `Session 状态未知，消息已暂存。`, "yellow", sid);
     return;
   }
 
-  const state = detectState(session.transcript_path);
+  let state = detectState(session.transcript_path);
+
+  // transcript 无法解析时（刚启动尚无交互消息），若进程确认存活则视为 waiting
+  if (state === "gone" && isProcessAlive(session.pid)) {
+    log(`  detectState=gone 但进程存活，降级为 waiting`);
+    state = "waiting";
+  }
+
   log(`  状态: ${state} (pid=${session.pid}, tty=${session.tty})`);
 
   switch (state) {
@@ -120,32 +144,33 @@ async function handleSessionMessage(
       const ok = sendViaITerm(session.tty, text);
       if (ok) {
         await replyCard(msgId, "✅ 已发送",
-          `消息已自动发送到 Claude Code 终端。\n\n> ${text.slice(0, 200)}`, "green");
+          `消息已自动发送到 Claude Code 终端。\n\n> ${text.slice(0, 200)}`, "green", sid);
         log(`  ✅ 已发送`);
       } else {
         enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
         await replyCard(msgId, "⚠️ 发送失败",
-          "无法通过 iTerm2 发送，消息已入队。请检查 iTerm2 是否在运行。", "yellow");
+          "无法通过 iTerm2 发送，消息已入队。请检查 iTerm2 是否在运行。", "yellow", sid);
       }
       break;
     }
     case "busy": {
       enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
       await replyCard(msgId, "⏳ Claude 处理中",
-        `Claude Code 正在执行任务，消息已暂存。\n\n任务完成后将自动发送到终端。`, "yellow");
+        `Claude Code 正在执行任务，消息已暂存。\n\n任务完成后将自动发送到终端。`, "yellow", sid);
       log(`  入队等待 (busy → waiting 时自动发送)`);
 
       // 后台轮询，等空闲时自动发送
       startWaitAndSend(sid, session.tty, session.transcript_path, text,
-        (_success, reason) => {
+        (success, reason) => {
           log(`📬 [${sid.slice(0, 16)}] 延迟发送: ${reason}`);
+          if (success) markDelivered(msgId);
         });
       break;
     }
     case "gone": {
       enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
       await replyCard(msgId, "⏳ 会话已退出",
-        `Claude Code 会话已结束，消息已暂存。\n\n下次启动 Claude Code 时会提醒你处理。`, "yellow");
+        `Claude Code 会话已结束，消息已暂存。\n\n下次启动 Claude Code 时会提醒你处理。`, "yellow", sid);
       log(`  进程已退出，入队`);
       break;
     }

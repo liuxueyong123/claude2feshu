@@ -1,9 +1,9 @@
 /**
  * 飞书 Open API 客户端 — token / 消息拉取 / @过滤 / 回复
  */
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { config, API_BASE, REQUEST_TIMEOUT_MS } from "./config.js";
+import { config, DATA_DIR, API_BASE, REQUEST_TIMEOUT_MS } from "./config.js";
 import { log } from "./logger.js";
 
 let _token = { value: "", expiresAt: 0 };
@@ -206,35 +206,41 @@ function extractPostText(node: unknown): string {
  *   3. msg_type="post", 富文本内容中嵌入了引用
  */
 export function getQuotedMessageId(msg: FeishuMessage): string {
-  // 话题回复：root_id 或 parent_id
   const raw = msg as unknown as Record<string, unknown>;
+
+  // 1) 正文内显式引用（用户主动选择的目标，优先级最高）
+  const content = msg.body?.content;
+  if (content) {
+    try {
+      const obj = JSON.parse(content) as Record<string, unknown>;
+
+      // reply_to — 用户点击"引用"时附带的目标消息
+      const replyTo = obj.reply_to as Record<string, unknown> | undefined;
+      const mid = replyTo?.message_id as string | undefined;
+      if (mid?.startsWith("om_")) return mid;
+
+      // quote 字段
+      const quote = obj.quote as Record<string, unknown> | undefined;
+      const qmid = quote?.message_id as string | undefined;
+      if (qmid?.startsWith("om_")) return qmid;
+
+      // 递归查找富文本中的引用
+      const rich = findQuotedInRichText(obj);
+      if (rich) return rich;
+    } catch {
+      /* fall through */
+    }
+  }
+
+  // 2) 线程父消息（用户直接在话题中回复，未显式引用其他消息时使用）
   const parent = raw.parent_id as string | undefined;
-  const root = raw.root_id as string | undefined;
   if (parent?.startsWith("om_")) return parent;
+
+  // 3) 线程根消息
+  const root = raw.root_id as string | undefined;
   if (root?.startsWith("om_")) return root;
 
-  // 正文内引用
-  const content = msg.body?.content;
-  if (!content) return "";
-
-  try {
-    const obj = JSON.parse(content) as Record<string, unknown>;
-
-    // reply_to 字段
-    const replyTo = obj.reply_to as Record<string, unknown> | undefined;
-    const mid = replyTo?.message_id as string | undefined;
-    if (mid?.startsWith("om_")) return mid;
-
-    // quote 字段
-    const quote = obj.quote as Record<string, unknown> | undefined;
-    const qmid = quote?.message_id as string | undefined;
-    if (qmid?.startsWith("om_")) return qmid;
-
-    // 递归查找富文本中的引用
-    return findQuotedInRichText(obj);
-  } catch {
-    return "";
-  }
+  return "";
 }
 
 function findQuotedInRichText(node: unknown): string {
@@ -258,85 +264,15 @@ function findQuotedInRichText(node: unknown): string {
   return "";
 }
 
-/**
- * 获取单条消息的完整内容。
- * 用于获取被引用消息以从中提取 session ID。
- */
-export async function getMessage(messageId: string): Promise<FeishuMessage | null> {
-  const [code, data] = await req("GET", `/im/v1/messages/${messageId}`);
-  if (code !== 0) {
-    log(`获取消息失败: ${messageId} code=${code}`, "WARN");
-    return null;
-  }
-  const items = (data.data as Record<string, unknown>)?.items as FeishuMessage[] | undefined;
-  return items?.[0] ?? null;
-}
-
-/**
- * 从消息内容中提取 Claude Code session ID。
- *
- * 匹配通知卡片中的格式: 🔗 **会话：** `abc123-def456-...`
- * 或更宽松: 会话：... `uuid`
- */
-export function extractSessionId(content: string): string {
-  if (!content) return "";
-
-  // 优先匹配卡片 markdown 格式: **会话：** `xxx`
-  const cardMatch = content.match(/会话：.{0,10}`([a-f0-9-]{16,})`/);
-  if (cardMatch) return cardMatch[1];
-
-  // 宽松匹配: 会话 后跟 UUID 模式
-  const looseMatch = content.match(/会话.{0,20}([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
-  if (looseMatch) return looseMatch[1];
-
-  // 从卡片 JSON 中提取（遍历 markdown 元素）
-  try {
-    const obj = JSON.parse(content) as Record<string, unknown>;
-    const sid = extractSidFromCard(obj);
-    if (sid) return sid;
-  } catch {
-    /* not JSON */
-  }
-
-  return "";
-}
-
-function extractSidFromCard(node: unknown): string {
-  if (!node || typeof node !== "object") return "";
-  if (Array.isArray(node)) {
-    for (const item of node) {
-      const r = extractSidFromCard(item);
-      if (r) return r;
-    }
-    return "";
-  }
-  const obj = node as Record<string, unknown>;
-
-  // markdown 元素的 content 字段
-  if (obj.tag === "markdown" && typeof obj.content === "string") {
-    const m = (obj.content as string).match(/会话：.{0,10}`([a-f0-9-]{16,})`/);
-    if (m) return m[1];
-  }
-
-  // plain_text 元素
-  if (obj.tag === "plain_text" && typeof obj.content === "string") {
-    const m = (obj.content as string).match(/会话：.{0,10}`([a-f0-9-]{16,})`/);
-    if (m) return m[1];
-  }
-
-  for (const v of Object.values(obj)) {
-    const r = extractSidFromCard(v);
-    if (r) return r;
-  }
-  return "";
-}
-
 // ---- 回复指定消息 ----
 
-export async function replyCard(msgId: string, title: string, content: string, color = "blue"): Promise<boolean> {
+export async function replyCard(msgId: string, title: string, content: string, color = "blue", sessionId = ""): Promise<string> {
   const card = buildCard(title, content, color);
-  const [code] = await req("POST", `/im/v1/messages/${msgId}/reply`, { content: card, msg_type: "interactive" });
-  return code === 0;
+  const [code, data] = await req("POST", `/im/v1/messages/${msgId}/reply`, { content: card, msg_type: "interactive" });
+  if (code !== 0) return "";
+  const messageId = (data.data as Record<string, unknown>)?.message_id as string | undefined;
+  if (messageId && sessionId) registerCardSession(messageId, sessionId);
+  return messageId ?? "";
 }
 
 // ---- 发送消息到群聊（API 方式，替代 webhook） ----
@@ -358,14 +294,14 @@ function buildCard(title: string, content: string, color: string): string {
   });
 }
 
-/** 通过 API 向指定群聊发送卡片消息 */
-export async function sendChatCard(title: string, content: string, color = "blue"): Promise<boolean> {
+/** 通过 API 向指定群聊发送卡片消息。返回 sent_message_id 或空字符串。 */
+export async function sendChatCard(title: string, content: string, color = "blue", sessionId = ""): Promise<string> {
   const chatId = config.chatId || (await getDefaultChatId());
   if (!chatId) {
     const msg = "未配置 FEISHU_CHAT_ID 且无可用群聊";
     log(msg, "ERROR");
     errlog(msg);
-    return false;
+    return "";
   }
 
   const card = buildCard(title, content, color);
@@ -375,19 +311,66 @@ export async function sendChatCard(title: string, content: string, color = "blue
     const msg = `API 发送失败: code=${code} data=${JSON.stringify(data)} chatId=${chatId}`;
     log(msg, "ERROR");
     errlog(msg);
-    return false;
+    return "";
   }
+  const messageId = (data.data as Record<string, unknown>)?.message_id as string | undefined;
   log(`消息已发送到 ${chatId.slice(0, 16)}...`, "INFO");
-  return true;
+
+  // 记录卡片→session 映射，便于引用回复时查找 session
+  if (messageId && sessionId) registerCardSession(messageId, sessionId);
+
+  return messageId ?? "";
 }
 
 /** 将错误写入文件，方便 hook 环境下排查 */
 function errlog(msg: string) {
   try {
-    appendFileSync(resolve(process.env.HOME ?? "/tmp", ".claude", "feishu_error.log"), `[${new Date().toISOString()}] ${msg}\n`);
+    appendFileSync(resolve(DATA_DIR, "feishu_error.log"), `[${new Date().toISOString()}] ${msg}\n`);
   } catch {
     /* ignore */
   }
+}
+
+// ---- 卡片 → Session 映射（解决 Feishu API 返回卡片降级内容问题） ----
+// GET /im/v1/messages/{msg_id} 对 interactive 卡片返回降级格式，不含 markdown，
+// 因此无法从被引用的卡片内容中提取 session ID。改为发送卡片时本地记录映射。
+
+const CARD_MAP_FILE = resolve(DATA_DIR, "card_session_map.jsonl");
+
+function ensureMapDir(): void {
+  try { mkdirSync(DATA_DIR, { recursive: true }); } catch { /* */ }
+}
+
+/** 发送卡片后记录 message_id → session_id 映射 */
+export function registerCardSession(messageId: string, sessionId: string): void {
+  if (!messageId || !sessionId) return;
+  ensureMapDir();
+  try {
+    writeFileSync(
+      CARD_MAP_FILE,
+      JSON.stringify({ message_id: messageId, session_id: sessionId, sent_at: new Date().toISOString() }) + "\n",
+      { flag: "a" },
+    );
+    log(`card→session 已登记: ${messageId.slice(0, 16)}... → ${sessionId.slice(0, 16)}...`, "DEBUG");
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 通过被引用的卡片 message_id 查找 session_id */
+export function lookupCardSession(quotedMessageId: string): string {
+  if (!quotedMessageId || !existsSync(CARD_MAP_FILE)) return "";
+  try {
+    const lines = readFileSync(CARD_MAP_FILE, "utf-8").split("\n");
+    // 从后往前查（最近的映射优先）
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const entry = JSON.parse(lines[i]) as { message_id?: string; session_id?: string };
+        if (entry.message_id === quotedMessageId) return entry.session_id ?? "";
+      } catch { /* skip */ }
+    }
+  } catch { /* ignore */ }
+  return "";
 }
 
 let _defaultChatId = "";
