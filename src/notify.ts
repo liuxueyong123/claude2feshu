@@ -3,17 +3,15 @@
  * 解析 hook stdin JSON，提取丰富上下文，推送卡片到飞书群。
  */
 import { sendChatCard, replyCard } from "./feishu_api.js";
-import { getPending, popNext, markDone } from "./inbox.js";
+import { getInboxPending, getPending as getPendingMessages, markDelivered } from "./message_queue.js";
 import { registerSession, markIdle, isProcessAlive, getSession } from "./session_state.js";
-import { getPending as getSessionPending, dequeueAll, listPendingSessions, markDelivered } from "./session_queue.js";
-import { detectState, findMyClaudeProcess, sendViaITerm } from "./terminal.js";
+import { findMyClaudeProcess, sendViaITerm } from "./terminal.js";
 import { log } from "./logger.js";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import { execSync } from "node:child_process";
 import { hostname } from "node:os";
-import { deliverMessagesSequentially } from "./session_delivery.js";
-import { deliverInboxPendingToTerminal } from "./inbox_delivery.js";
+import { deliverNextPending } from "./delivery_orchestrator.js";
 
 // ============================================================
 // 类型
@@ -390,13 +388,43 @@ export function replyToMessage(msgId: string, text: string, sessionId = ""): Pro
 }
 
 export function checkInboxText(): string {
-  const p = getPending();
+  const p = getInboxPending();
   return p.length ? p.map((c) => `[${c.sender}] ${c.content} (ID: ${c.id})`).join("\n") : "📭 无待处理指令";
 }
 
 export function popInboxCommand(): string {
-  const cmd = popNext();
+  const pending = getInboxPending();
+  const cmd = pending[0] ?? null;
   return cmd ? `[Feishu指令] 来自 ${cmd.sender}: ${cmd.content}\n(ID: ${cmd.id})` : "📭 无待处理指令";
+}
+
+// ============================================================
+// 后台投递（fire-and-forget，不阻塞 hook 返回）
+// ============================================================
+
+async function deliverNextInBackground(pid: number, tty: string, sid: string, transcriptPath: string): Promise<void> {
+  log(`📬 开始单条队列投递`);
+
+  const result = await deliverNextPending({
+    sessionId: sid,
+    tty,
+    transcriptPath,
+    pid,
+    sendViaITerm,
+    replyCard,
+  });
+
+  const pendingTotal = result.failed + result.remaining;
+  if (result.sent > 0 || pendingTotal > 0) {
+    await sendNotification(
+      `📥 消息投递：${result.sent} 条成功`,
+      result.details.slice(-10).join("\n") + (pendingTotal > 0 ? `\n\n⚠️ ${pendingTotal} 条保留在队列中，等待下次 hook 投递` : ""),
+      pendingTotal === 0 ? "success" : "warning",
+      sid,
+    );
+  }
+
+  log(`📬 单条投递完成: sent=${result.sent} remaining=${result.remaining} reason=${result.reason}`);
 }
 
 // ============================================================
@@ -424,7 +452,7 @@ async function main(): Promise<void> {
   if (replyId) {
     const msg = g("--message") ?? "";
     console.log((await replyToMessage(replyId, msg)) ? `✅ 已回复 ${replyId}` : `❌ 回复失败`);
-    markDone(replyId);
+    markDelivered(replyId);
     return;
   }
 
@@ -462,7 +490,7 @@ async function main(): Promise<void> {
     }
 
     // 检查通用 inbox
-    const p = getPending();
+    const p = getInboxPending();
     if (p.length) {
       await sendNotification(
         "📥 收件箱待处理",
@@ -476,96 +504,20 @@ async function main(): Promise<void> {
       );
     }
 
-    let canDeliverSessionQueue = true;
-    if (proc && p.length) {
-      const results: string[] = [];
-      const delivery = await deliverInboxPendingToTerminal(
-        p,
-        {
-          getState: () => {
-            const state = detectState(event.transcript_path ?? "");
-            return state === "gone" && isProcessAlive(proc.pid) ? "waiting" : state;
-          },
-          send: (message, item) => {
-            const ok = sendViaITerm(proc.tty, message);
-            results.push(`${ok ? "✅" : "❌"} [${item.sender}]: ${message.slice(0, 80)}`);
-            return ok;
-          },
-          markDone,
-          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-        },
-      );
-
-      canDeliverSessionQueue = delivery.reason === "done";
-      const pendingCount = delivery.failed + delivery.remaining;
-      await sendNotification(
-        `📥 收件箱投递：${delivery.sent} 条成功`,
-        results.slice(-10).join("\n") + (pendingCount > 0 ? `\n\n⚠️ ${pendingCount} 条保留在收件箱中，下次启动时投递` : ""),
-        pendingCount === 0 ? "success" : "warning",
-        sid,
-      );
-    }
-
-    // 自动发送 session 队列中的待处理消息
-    // 策略: 遍历所有 pending session，如果目标 session 已死或就是当前 session，则发送到当前终端
-    if (proc && canDeliverSessionQueue) {
-      const allPending = listPendingSessions();
-      const toSend: Array<{ session_id: string; count: number; messages: ReturnType<typeof dequeueAll> }> = [];
-
-      for (const { session_id: targetSid, count } of allPending) {
-        if (targetSid === sid) {
-          // 精确匹配当前 session
-          const msgs = dequeueAll(sid);
-          if (msgs.length) toSend.push({ session_id: sid, count, messages: msgs });
-        } else {
-          // 检查目标 session 进程是否还活着
-          const targetSession = getSession(targetSid);
-          if (!targetSession || !isProcessAlive(targetSession.pid)) {
-            // 目标 session 已死，消息路由到当前 session
-            const msgs = dequeueAll(targetSid);
-            if (msgs.length) toSend.push({ session_id: targetSid, count, messages: msgs });
-          }
-          // 目标 session 还活着 → 跳过，让 feishu_bot 的串行投递器处理
-        }
-      }
-
-      if (toSend.length) {
-        const allMsgs = toSend.flatMap((t) => t.messages);
-        log(`📬 SessionStart: 发送 ${allMsgs.length} 条队列消息 (来自 ${toSend.length} 个 session)`);
-
-        const results: string[] = [];
-        const delivery = await deliverMessagesSequentially(allMsgs, {
-          getState: () => {
-            const state = detectState(event.transcript_path ?? "");
-            return state === "gone" && isProcessAlive(proc.pid) ? "waiting" : state;
-          },
-          send: (message, item) => {
-            const sender = "sender" in item && typeof item.sender === "string" ? item.sender : "";
-            const ok = sendViaITerm(proc.tty, message);
-            results.push(`${ok ? "✅" : "❌"} [${sender}]: ${message.slice(0, 80)}`);
-            return ok;
-          },
-          markDelivered,
-          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-        });
-
-        const pendingCount = delivery.failed + delivery.remaining;
-        await sendNotification(
-          `📬 队列投递：${delivery.sent} 条成功`,
-          results.slice(-10).join("\n") + (pendingCount > 0 ? `\n\n⚠️ ${pendingCount} 条保留在队列中，等待下次投递` : ""),
-          pendingCount === 0 ? "success" : "warning",
-          sid,
-        );
-      }
+    // 后台投递所有 pending 消息（fire-and-forget，不阻塞 SessionStart）
+    if (proc) {
+      void deliverNextInBackground(proc.pid, proc.tty, sid, event.transcript_path ?? "");
     }
   }
 
-  // Stop / StopFailure / SessionEnd: 标记空闲 + 检查队列
-  // 延时 6 秒再检查，给后台串行投递留出窗口
+  // Stop / StopFailure / SessionEnd: 标记空闲，并触发下一条队列投递
   if (sid && (event.hook_event_name === "Stop" || event.hook_event_name === "StopFailure" || event.hook_event_name === "SessionEnd")) {
     markIdle(sid);
-    await new Promise((r) => setTimeout(r, 6000));
-    const sq = getSessionPending(sid);
+    const session = getSession(sid);
+    if (session && isProcessAlive(session.pid)) {
+      await deliverNextInBackground(session.pid, session.tty, sid, session.transcript_path || event.transcript_path || "");
+    }
+    const sq = getPendingMessages(sid);
     if (sq.length) {
       await sendNotification(
         "📬 会话结束，待处理消息",
