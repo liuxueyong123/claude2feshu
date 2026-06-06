@@ -18,7 +18,7 @@ export interface FeishuMessage {
   create_time: string;
   sender: { id: string; id_type?: string };
   body: { content: string };
-  mentions?: Array<{ key: string; id: { open_id?: string }; name: string }>;
+  mentions?: Array<{ key: string; id: string | { open_id?: string }; id_type?: string; name: string; tenant_key?: string }>;
   _chat_name?: string;
 }
 
@@ -122,6 +122,16 @@ export async function listReceivedMessages(pageSize = 20, onlyMentions = true): 
 // ---- @提及检测 ----
 
 function mentionsBot(msg: FeishuMessage, botId: string): boolean {
+  // 优先检查 mentions 数组（飞书结构化 @提及）
+  if (msg.mentions?.length && botId) {
+    for (const m of msg.mentions) {
+      // m.id 可能是字符串（直接是 open_id），也可能是对象 { open_id: "..." }
+      const mid = typeof m.id === "string" ? m.id : ((m.id as Record<string, unknown>)?.open_id as string | undefined);
+      if (mid === botId) return true;
+    }
+  }
+
+  // 回退：检查消息正文文本
   const content = msg.body?.content;
   if (!content) return false;
   try {
@@ -183,6 +193,142 @@ function extractPostText(node: unknown): string {
     for (const v of Object.values(obj)) parts.push(extractPostText(v));
   }
   return parts.join("");
+}
+
+// ---- 引用消息解析 ----
+
+/**
+ * 从消息 body 中提取被引用的消息 ID。
+ *
+ * 飞书引用消息的可能结构:
+ *   1. msg_type="text", body.content JSON 含 reply_to.message_id
+ *   2. 消息对象顶层有 root_id / parent_id（话题回复）
+ *   3. msg_type="post", 富文本内容中嵌入了引用
+ */
+export function getQuotedMessageId(msg: FeishuMessage): string {
+  // 话题回复：root_id 或 parent_id
+  const raw = msg as unknown as Record<string, unknown>;
+  const parent = raw.parent_id as string | undefined;
+  const root = raw.root_id as string | undefined;
+  if (parent?.startsWith("om_")) return parent;
+  if (root?.startsWith("om_")) return root;
+
+  // 正文内引用
+  const content = msg.body?.content;
+  if (!content) return "";
+
+  try {
+    const obj = JSON.parse(content) as Record<string, unknown>;
+
+    // reply_to 字段
+    const replyTo = obj.reply_to as Record<string, unknown> | undefined;
+    const mid = replyTo?.message_id as string | undefined;
+    if (mid?.startsWith("om_")) return mid;
+
+    // quote 字段
+    const quote = obj.quote as Record<string, unknown> | undefined;
+    const qmid = quote?.message_id as string | undefined;
+    if (qmid?.startsWith("om_")) return qmid;
+
+    // 递归查找富文本中的引用
+    return findQuotedInRichText(obj);
+  } catch {
+    return "";
+  }
+}
+
+function findQuotedInRichText(node: unknown): string {
+  if (!node || typeof node !== "object") return "";
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const r = findQuotedInRichText(item);
+      if (r) return r;
+    }
+    return "";
+  }
+  const obj = node as Record<string, unknown>;
+  if (obj.tag === "quote" || obj.tag === "reply") {
+    const mid = obj.message_id as string | undefined;
+    if (mid?.startsWith("om_")) return mid;
+  }
+  for (const v of Object.values(obj)) {
+    const r = findQuotedInRichText(v);
+    if (r) return r;
+  }
+  return "";
+}
+
+/**
+ * 获取单条消息的完整内容。
+ * 用于获取被引用消息以从中提取 session ID。
+ */
+export async function getMessage(messageId: string): Promise<FeishuMessage | null> {
+  const [code, data] = await req("GET", `/im/v1/messages/${messageId}`);
+  if (code !== 0) {
+    log(`获取消息失败: ${messageId} code=${code}`, "WARN");
+    return null;
+  }
+  const items = (data.data as Record<string, unknown>)?.items as FeishuMessage[] | undefined;
+  return items?.[0] ?? null;
+}
+
+/**
+ * 从消息内容中提取 Claude Code session ID。
+ *
+ * 匹配通知卡片中的格式: 🔗 **会话：** `abc123-def456-...`
+ * 或更宽松: 会话：... `uuid`
+ */
+export function extractSessionId(content: string): string {
+  if (!content) return "";
+
+  // 优先匹配卡片 markdown 格式: **会话：** `xxx`
+  const cardMatch = content.match(/会话：.{0,10}`([a-f0-9-]{16,})`/);
+  if (cardMatch) return cardMatch[1];
+
+  // 宽松匹配: 会话 后跟 UUID 模式
+  const looseMatch = content.match(/会话.{0,20}([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+  if (looseMatch) return looseMatch[1];
+
+  // 从卡片 JSON 中提取（遍历 markdown 元素）
+  try {
+    const obj = JSON.parse(content) as Record<string, unknown>;
+    const sid = extractSidFromCard(obj);
+    if (sid) return sid;
+  } catch {
+    /* not JSON */
+  }
+
+  return "";
+}
+
+function extractSidFromCard(node: unknown): string {
+  if (!node || typeof node !== "object") return "";
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const r = extractSidFromCard(item);
+      if (r) return r;
+    }
+    return "";
+  }
+  const obj = node as Record<string, unknown>;
+
+  // markdown 元素的 content 字段
+  if (obj.tag === "markdown" && typeof obj.content === "string") {
+    const m = (obj.content as string).match(/会话：.{0,10}`([a-f0-9-]{16,})`/);
+    if (m) return m[1];
+  }
+
+  // plain_text 元素
+  if (obj.tag === "plain_text" && typeof obj.content === "string") {
+    const m = (obj.content as string).match(/会话：.{0,10}`([a-f0-9-]{16,})`/);
+    if (m) return m[1];
+  }
+
+  for (const v of Object.values(obj)) {
+    const r = extractSidFromCard(v);
+    if (r) return r;
+  }
+  return "";
 }
 
 // ---- 回复指定消息 ----

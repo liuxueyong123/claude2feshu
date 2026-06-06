@@ -4,6 +4,9 @@
  */
 import { sendChatCard, replyCard } from "./feishu_api.js";
 import { getPending, popNext, markDone } from "./inbox.js";
+import { registerSession, markIdle } from "./session_state.js";
+import { getPending as getSessionPending } from "./session_queue.js";
+import { findClaudeProcess } from "./terminal.js";
 import { log } from "./logger.js";
 import { readFileSync, appendFileSync, existsSync } from "node:fs";
 import { resolve, basename } from "node:path";
@@ -428,8 +431,26 @@ async function main(): Promise<void> {
 
   await sendNotification(title, fullMessage, type);
 
-  // SessionStart 额外检查 inbox
-  if (event.hook_event_name === "SessionStart") {
+  // ---- Session 生命周期管理 ----
+  const sid = event.session_id ?? "";
+
+  if (event.hook_event_name === "SessionStart" && sid) {
+    // 注册 session：查找 Claude Code 进程获取 PID 和 TTY
+    const proc = findClaudeProcess();
+    if (proc) {
+      registerSession({
+        session_id: sid,
+        pid: proc.pid,
+        tty: proc.tty,
+        transcript_path: event.transcript_path ?? "",
+        status: "active",
+        started_at: new Date().toISOString(),
+        last_heartbeat: "",
+      });
+      log(`Session 注册: ${sid.slice(0, 16)}... pid=${proc.pid} tty=${proc.tty}`, "DEBUG");
+    }
+
+    // 检查通用 inbox
     const p = getPending();
     if (p.length) {
       await sendNotification(
@@ -439,6 +460,33 @@ async function main(): Promise<void> {
             .slice(-3)
             .map((c) => `- [${c.sender}]: ${c.content.slice(0, 100)}`)
             .join("\n"),
+        "warning",
+      );
+    }
+
+    // 检查 session 专用队列
+    const sq = getSessionPending(sid);
+    if (sq.length) {
+      await sendNotification(
+        "📬 Session 待处理消息",
+        `${sq.length} 条消息等待处理：\n` +
+          sq.slice(-3).map((m) => `- [${m.sender}]: ${m.content.slice(0, 100)}`).join("\n") +
+          `\n\n可在终端中处理，或重新启动该 session。`,
+        "warning",
+      );
+    }
+  }
+
+  // Stop / StopFailure / SessionEnd: 标记空闲 + 检查队列
+  if (sid && (event.hook_event_name === "Stop" || event.hook_event_name === "StopFailure" || event.hook_event_name === "SessionEnd")) {
+    markIdle(sid);
+    const sq = getSessionPending(sid);
+    if (sq.length) {
+      await sendNotification(
+        "📬 任务结束，待处理消息",
+        `${sq.length} 条消息等待处理：\n` +
+          sq.slice(-3).map((m) => `- [${m.sender}]: ${m.content.slice(0, 100)}`).join("\n") +
+          `\n\n请启动 Claude Code 新会话来处理。`,
         "warning",
       );
     }

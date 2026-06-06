@@ -3,11 +3,14 @@
 import { pollLoop, runOnce, writePid, removePid, isRunning } from "./feishu_bot.js";
 import { getPending, popNext, pendingCount, clearDone, markDone } from "./inbox.js";
 import { replyCard, sendChatCard, listReceivedMessages } from "./feishu_api.js";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, openSync, mkdirSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { PID_FILE, CHECKPOINT_FILE } from "./config.js";
+import { PID_FILE, CHECKPOINT_FILE, LOG_FILE } from "./config.js";
 import { log } from "./logger.js";
+import { listActive, getSession } from "./session_state.js";
+import { getPending as getSessionPending, listPendingSessions } from "./session_queue.js";
+import { detectState, sendViaITerm } from "./terminal.js";
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -27,11 +30,21 @@ const USAGE = `飞书 Bot 管理
   clear       清理已完成记录
   test-webhook 测试 webhook
   test-api     测试 API（拉取消息）
+
+Session 管理:
+  session-list               查看活跃 session + 待处理消息
+  session-state <sid>        查看 session 详情 + Claude 状态
+  session-queue <sid>        查看 session 待投递消息
+  session-send <sid> <msg>   手动发送消息到终端（调试）
 `;
 
 async function daemonSpawn() {
+  // 确保日志目录存在
+  const logDir = LOG_FILE.replace(/\/[^/]+$/, "");
+  if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+  const logFd = openSync(LOG_FILE, "a");
   const child = spawn(process.execPath, ["--import", "tsx", __filename, "daemon"], {
-    detached: true, stdio: "ignore", cwd: process.cwd(),
+    detached: true, stdio: ["ignore", logFd, logFd], cwd: process.cwd(),
   });
   child.unref();
   console.log(`✅ 守护进程已启动 (PID: ${child.pid})`);
@@ -71,6 +84,57 @@ async function main(): Promise<void> {
     case "test-api": {
       const msgs = await listReceivedMessages(5, false);
       msgs.forEach(m => console.log(`[${m.msg_type}] ${m.sender?.id}: ${m.body?.content?.slice(0, 100)}`));
+      break;
+    }
+    case "session-list": {
+      const active = listActive();
+      if (active.length) {
+        active.forEach(s => console.log(`[${s.session_id.slice(0, 16)}...] pid=${s.pid} tty=${s.tty} ${s.status} started=${s.started_at.slice(0, 19)}`));
+      } else {
+        console.log("无活跃 session");
+      }
+      const pending = listPendingSessions();
+      if (pending.length) {
+        console.log(`\n待处理消息: ${pending.map(p => `${p.session_id.slice(0, 12)}... (${p.count}条)`).join(", ")}`);
+      }
+      break;
+    }
+    case "session-state": {
+      if (a3) {
+        const s = getSession(a3);
+        if (s) {
+          console.log(JSON.stringify(s, null, 2));
+          const state = detectState(s.transcript_path);
+          console.log(`Claude 状态: ${state}`);
+        } else {
+          console.log("Session 不存在");
+        }
+      } else {
+        console.log("用法: session-state <session_id>");
+      }
+      break;
+    }
+    case "session-queue": {
+      const sq = a3 ? getSessionPending(a3) : [];
+      if (sq.length) {
+        sq.forEach(m => console.log(`[${m.sender}] ${m.content}\n  ── received: ${m.received_at.slice(0, 19)} status: ${m.status}`));
+      } else {
+        console.log(a3 ? `Session ${a3.slice(0, 16)}... 无待处理消息` : "用法: session-queue <session_id>");
+      }
+      break;
+    }
+    case "session-send": {
+      if (a3 && a4) {
+        const session = getSession(a3);
+        if (session) {
+          const ok = sendViaITerm(session.tty, a4);
+          console.log(ok ? `✅ 已发送到 tty=${session.tty}` : "❌ 发送失败");
+        } else {
+          console.log("Session 不存在");
+        }
+      } else {
+        console.error("用法: session-send <session_id> <message>");
+      }
       break;
     }
     default: console.log(USAGE);
