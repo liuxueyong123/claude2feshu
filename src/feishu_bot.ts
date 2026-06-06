@@ -147,11 +147,11 @@ async function processNewMessages(): Promise<string[]> {
 
 export function buildInboxFallbackReply(text: string): { title: string; content: string; color: string } {
   return {
-    title: "⏳ 等待 Claude Code 启动",
+    title: "📨 已收到，等待投递",
     content:
-      `内容：${text.slice(0, 200)}\n\n` +
-      "当前没有可用的 Claude Code 终端，消息已暂存到 inbox。\n" +
-      "启动 Claude Code 后会自动发送到终端。",
+      `指令：${text.slice(0, 200)}\n\n` +
+      "当前没有运行中的 Claude Code，指令已存入收件箱。\n" +
+      "下次启动后自动处理。",
     color: "yellow",
   };
 }
@@ -165,13 +165,13 @@ async function handleSessionMessage(msgId: string, chatId: string, sender: strin
   if (!session) {
     log(`  Session 未注册，入队等待`);
     enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
-    await replyCard(msgId, "⏳ 会话未运行", `目标 Session 当前未运行，消息已暂存。\n\n将在终端可用时自动发送到终端。`, "yellow", sid);
+    await replyCard(msgId, "📨 已入队", `目标会话未运行，指令已保存。\n\n会话恢复后自动投递。`, "yellow", sid);
     return;
   }
 
   if (!session.transcript_path) {
     enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
-    await replyCard(msgId, "⏳ 无法检测状态", `Session 状态未知，消息已暂存。`, "yellow", sid);
+    await replyCard(msgId, "📨 已入队", `会话状态未知，指令已保存。\n\n确认终端可用后自动投递。`, "yellow", sid);
     return;
   }
 
@@ -189,17 +189,17 @@ async function handleSessionMessage(msgId: string, chatId: string, sender: strin
     case "waiting": {
       const ok = sendViaITerm(session.tty, text);
       if (ok) {
-        await replyCard(msgId, "✅ 已发送", `消息已自动发送到 Claude Code 终端。\n\n> ${text.slice(0, 200)}`, "green", sid);
+        await replyCard(msgId, "✅ 已投递", `指令已发送到终端处理。\n\n> ${text.slice(0, 200)}`, "green", sid);
         log(`  ✅ 已发送`);
       } else {
         enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
-        await replyCard(msgId, "⚠️ 发送失败", "无法通过 iTerm2 发送，消息已入队。请检查 iTerm2 是否在运行。", "yellow", sid);
+        await replyCard(msgId, "⚠️ 投递失败", "无法写入终端，指令已保存。\n\n请确认终端软件正在运行。", "yellow", sid);
       }
       break;
     }
     case "busy": {
       enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
-      await replyCard(msgId, "⏳ Claude 处理中", `Claude Code 正在执行任务，消息已暂存。\n\n任务完成后将自动发送到终端。`, "yellow", sid);
+      await replyCard(msgId, "⏳ 处理中，已排队", `当前任务执行中，指令已保存。\n\n任务完成后自动投递。`, "yellow", sid);
       log(`  入队等待 (busy → waiting 时自动发送)`);
 
       scheduleSessionDelivery(sid, session.tty, session.transcript_path, session.pid);
@@ -207,7 +207,7 @@ async function handleSessionMessage(msgId: string, chatId: string, sender: strin
     }
     case "gone": {
       enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
-      await replyCard(msgId, "⏳ 会话已退出", `Claude Code 会话已结束，消息已暂存。\n\n将在终端可用时自动发送到终端。`, "yellow", sid);
+      await replyCard(msgId, "📨 已入队", `会话已退出，指令已保存。\n\n下次启动后自动投递。`, "yellow", sid);
       log(`  进程已退出，入队`);
       break;
     }
@@ -232,7 +232,7 @@ async function drainSessionDelivery(sid: string, tty: string, transcriptPath: st
     send: (message) => sendViaITerm(tty, message),
     markDelivered,
     onDelivered: async (item) => {
-      await replyCard(item.id, "✅ 已自动发送", `任务完成后消息已自动发送到 Claude Code 终端。\n\n> ${item.content.slice(0, 200)}`, "green", sid);
+      await replyCard(item.id, "✅ 已投递", `等待的指令已自动发送到终端。\n\n> ${item.content.slice(0, 200)}`, "green", sid);
     },
     sleep,
   });

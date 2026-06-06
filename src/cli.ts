@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   const a3 = process.argv[3], a4 = process.argv[4];
 
   switch (cmd) {
-    case "start": isRunning() ? console.log("⚠️ 已在运行") : await daemonSpawn(); break;
+    case "start": isRunning() ? console.log("⚠️ 守护进程已在运行") : await daemonSpawn(); break;
     case "daemon": writePid(); process.on("exit", removePid); process.on("SIGTERM", () => { removePid(); process.exit(0); }); await pollLoop(); removePid(); break;
     case "stop":
       if (isRunning()) { process.kill(Number(readFileSync(PID_FILE, "utf-8").trim()), "SIGTERM"); console.log("✅ 已停止"); }
@@ -71,10 +71,10 @@ async function main(): Promise<void> {
     case "once": await runOnce(); break;
     case "inbox": {
       const p = getPending();
-      console.log(p.length ? p.map(c => `[${c.sender}] ${c.content} (${c.id})`).join("\n") : "📭 无待处理");
+      console.log(p.length ? p.map(c => `[${c.sender}] ${c.content} (${c.id})`).join("\n") : "📭 收件箱为空");
       break;
     }
-    case "pop": { const c = popNext(); console.log(c ? `[${c.sender}] ${c.content}\n(ID: ${c.id})` : "📭 无"); break; }
+    case "pop": { const c = popNext(); console.log(c ? `[${c.sender}] ${c.content}\n(ID: ${c.id})` : "📭 收件箱为空"); break; }
     case "done": a3 ? (markDone(a3), console.log(`✅ ${a3}`)) : console.error("用法: done <id>"); break;
     case "reply":
       if (a3 && a4) { const escaped = a4.replace(/```/g, '``​`'); const ok = await replyCard(a3, "✅ 结果", `\`\`\`\n${escaped}\n\`\`\`\n\n— Claude Code`, "green"); ok ? (markDone(a3), console.log("✅")) : console.error("❌"); }

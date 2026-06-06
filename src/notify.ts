@@ -386,7 +386,7 @@ function wrapInCodeBlock(text: string): string {
 export function replyToMessage(msgId: string, text: string, sessionId = ""): Promise<string> {
   // 按字节截断到卡片上限，保留代码块包裹结构
   const body = wrapInCodeBlock(clipBytes(text, CARD_CONTENT_MAX_BYTES));
-  return replyCard(msgId, "✅ Claude Code 执行结果", `${body}\n\n— Claude Code`, "green", sessionId);
+  return replyCard(msgId, "✅ 执行结果", `${body}\n\n— Claude Code`, "green", sessionId);
 }
 
 export function checkInboxText(): string {
@@ -465,8 +465,8 @@ async function main(): Promise<void> {
     const p = getPending();
     if (p.length) {
       await sendNotification(
-        "📥 飞书待处理指令",
-        `${p.length} 条\n` +
+        "📥 收件箱待处理",
+        `共 ${p.length} 条指令：\n` +
           p
             .slice(-3)
             .map((c) => `- [${c.sender}]: ${c.content.slice(0, 100)}`)
@@ -499,8 +499,8 @@ async function main(): Promise<void> {
       canDeliverSessionQueue = delivery.reason === "done";
       const pendingCount = delivery.failed + delivery.remaining;
       await sendNotification(
-        `📥 已发送 ${delivery.sent} 条 inbox 指令`,
-        results.slice(-10).join("\n") + (pendingCount > 0 ? `\n\n⚠️ ${pendingCount} 条仍在 inbox 中等待下次投递` : ""),
+        `📥 收件箱投递：${delivery.sent} 条成功`,
+        results.slice(-10).join("\n") + (pendingCount > 0 ? `\n\n⚠️ ${pendingCount} 条保留在收件箱中，下次启动时投递` : ""),
         pendingCount === 0 ? "success" : "warning",
         sid,
       );
@@ -551,8 +551,8 @@ async function main(): Promise<void> {
 
         const pendingCount = delivery.failed + delivery.remaining;
         await sendNotification(
-          `📬 已发送 ${delivery.sent} 条队列消息`,
-          results.slice(-10).join("\n") + (pendingCount > 0 ? `\n\n⚠️ ${pendingCount} 条仍在队列中等待下次投递` : ""),
+          `📬 队列投递：${delivery.sent} 条成功`,
+          results.slice(-10).join("\n") + (pendingCount > 0 ? `\n\n⚠️ ${pendingCount} 条保留在队列中，等待下次投递` : ""),
           pendingCount === 0 ? "success" : "warning",
           sid,
         );
@@ -568,13 +568,13 @@ async function main(): Promise<void> {
     const sq = getSessionPending(sid);
     if (sq.length) {
       await sendNotification(
-        "📬 任务结束，待处理消息",
-        `${sq.length} 条消息等待处理：\n` +
+        "📬 会话结束，待处理消息",
+        `${sq.length} 条指令等待处理：\n` +
           sq
             .slice(-3)
             .map((m) => `- [${m.sender}]: ${m.content.slice(0, 100)}`)
             .join("\n") +
-          `\n\n将在终端空闲时自动发送到终端。`,
+          `\n\n终端空闲时自动投递。`,
         "warning",
         sid,
       );
