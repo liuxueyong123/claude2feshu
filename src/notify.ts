@@ -68,7 +68,8 @@ function buildContext(event: HookEvent): string {
     const project = basename(event.cwd);
     const git = getGitContext(event.cwd);
     if (git) {
-      lines.push(`📁 **项目：** ${project}${git ? `  ·  🌿 ${git}` : ""}`);
+      lines.push(`📁 **项目：** ${project}`);
+      lines.push(`🌿 **分支：** ${git}`);
     } else {
       lines.push(`📁 **项目：** ${project}`);
     }
