@@ -67,11 +67,9 @@ function buildContext(event: HookEvent): string {
   if (event.cwd) {
     const project = basename(event.cwd);
     const git = getGitContext(event.cwd);
+    lines.push(`📁 **项目：** ${project}`);
     if (git) {
-      lines.push(`📁 **项目：** ${project}`);
       lines.push(`🌿 **分支：** ${git}`);
-    } else {
-      lines.push(`📁 **项目：** ${project}`);
     }
   }
 
@@ -88,7 +86,7 @@ function buildContext(event: HookEvent): string {
   // 会话 ID
   const sid = event.session_id ?? "";
   if (sid) {
-    lines.push(`🔗 **会话：** \`${sid.slice(0, 16)}…\``);
+    lines.push(`🔗 **会话：** \`${sid}\``);
   }
 
   // ============================================================
@@ -189,7 +187,9 @@ function getHostname(): string {
     try {
       const name = execSync("scutil --get ComputerName", { encoding: "utf-8", timeout: 2000 }).trim();
       if (name) return name;
-    } catch { /* fall through */ }
+    } catch {
+      /* fall through */
+    }
   }
   return hostname();
 }
@@ -199,7 +199,7 @@ function getGitContext(cwd: string): string {
     if (!cwd || !existsSync(resolve(cwd, ".git"))) return "";
     const branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd, encoding: "utf-8", timeout: 3000 }).trim();
     const commit = execSync("git log -1 --format=%h", { cwd, encoding: "utf-8", timeout: 3000 }).trim();
-    return `${branch}  **${commit}**`;
+    return `${branch}  ${commit}`;
   } catch {
     return "";
   }
