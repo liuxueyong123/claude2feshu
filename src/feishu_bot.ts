@@ -5,12 +5,14 @@ import { config, PID_FILE, CHECKPOINT_FILE, DATA_DIR } from "./config.js";
 import { log } from "./logger.js";
 import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, lookupCardSession } from "./feishu_api.js";
 import { enqueueCommand, pendingCount } from "./inbox.js";
-import { detectState, sendViaITerm, startWaitAndSend } from "./terminal.js";
+import { detectState, sendViaITerm } from "./terminal.js";
 import { getSession, findByPrefix, listActive, isProcessAlive } from "./session_state.js";
-import { enqueue as enqueueSession, markDelivered } from "./session_queue.js";
+import { enqueue as enqueueSession, getPending as getSessionPending, markDelivered } from "./session_queue.js";
 import type { QueuedMessage } from "./session_queue.js";
+import { deliverMessagesSequentially } from "./session_delivery.js";
 
 let running = true;
+const activeDeliveries = new Set<string>();
 
 function loadCkpt(): string {
   if (!existsSync(CHECKPOINT_FILE)) return "";
@@ -67,6 +69,8 @@ async function processNewMessages(): Promise<string[]> {
     newMsgs.push(msg);
   }
   if (!newMsgs.length) return [];
+
+  log(`收到 ${newMsgs.length} 条新消息等待处理`, "DEBUG");
 
   for (const msg of newMsgs.reverse()) {
     const id = msg.message_id,
@@ -134,10 +138,22 @@ async function processNewMessages(): Promise<string[]> {
 
     // 通用 inbox
     enqueueCommand(id, chatId, sender, text, msg.create_time);
-    await replyCard(id, "✅ 收到指令", `内容：${text.slice(0, 200)}\nClaude Code 正在处理，请稍候…`);
+    const fallbackReply = buildInboxFallbackReply(text);
+    await replyCard(id, fallbackReply.title, fallbackReply.content, fallbackReply.color);
   }
   saveCkpt(messages[0]?.message_id ?? "", messages[0]?.create_time ?? "");
   return newMsgs.map((m) => m.message_id);
+}
+
+export function buildInboxFallbackReply(text: string): { title: string; content: string; color: string } {
+  return {
+    title: "⏳ 等待 Claude Code 启动",
+    content:
+      `内容：${text.slice(0, 200)}\n\n` +
+      "当前没有可用的 Claude Code 终端，消息已暂存到 inbox。\n" +
+      "启动 Claude Code 后会自动发送到终端。",
+    color: "yellow",
+  };
 }
 
 // ---- Session 路由处理 ----
@@ -186,14 +202,7 @@ async function handleSessionMessage(msgId: string, chatId: string, sender: strin
       await replyCard(msgId, "⏳ Claude 处理中", `Claude Code 正在执行任务，消息已暂存。\n\n任务完成后将自动发送到终端。`, "yellow", sid);
       log(`  入队等待 (busy → waiting 时自动发送)`);
 
-      // 后台轮询，等空闲时自动发送
-      startWaitAndSend(sid, session.tty, session.transcript_path, text, async (success, reason) => {
-        log(`📬 [${sid.slice(0, 16)}] 延迟发送: ${reason}`);
-        if (success) {
-          markDelivered(msgId);
-          await replyCard(msgId, "✅ 已自动发送", `任务完成后消息已自动发送到 Claude Code 终端。\n\n> ${text.slice(0, 200)}`, "green", sid);
-        }
-      });
+      scheduleSessionDelivery(sid, session.tty, session.transcript_path, session.pid);
       break;
     }
     case "gone": {
@@ -203,6 +212,32 @@ async function handleSessionMessage(msgId: string, chatId: string, sender: strin
       break;
     }
   }
+}
+
+function scheduleSessionDelivery(sid: string, tty: string, transcriptPath: string, pid: number): void {
+  if (activeDeliveries.has(sid)) return;
+  activeDeliveries.add(sid);
+  void drainSessionDelivery(sid, tty, transcriptPath, pid).finally(() => activeDeliveries.delete(sid));
+}
+
+async function drainSessionDelivery(sid: string, tty: string, transcriptPath: string, pid: number): Promise<void> {
+  const pending = getSessionPending(sid);
+  if (!pending.length) return;
+
+  const result = await deliverMessagesSequentially(pending, {
+    getState: () => {
+      const state = detectState(transcriptPath);
+      return state === "gone" && isProcessAlive(pid) ? "waiting" : state;
+    },
+    send: (message) => sendViaITerm(tty, message),
+    markDelivered,
+    onDelivered: async (item) => {
+      await replyCard(item.id, "✅ 已自动发送", `任务完成后消息已自动发送到 Claude Code 终端。\n\n> ${item.content.slice(0, 200)}`, "green", sid);
+    },
+    sleep,
+  });
+
+  log(`📬 [${sid.slice(0, 16)}] 队列投递: sent=${result.sent} remaining=${result.remaining} reason=${result.reason}`);
 }
 
 function makeSessionMsg(id: string, chatId: string, sender: string, content: string, sessionId: string): QueuedMessage {

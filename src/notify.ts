@@ -5,14 +5,15 @@
 import { sendChatCard, replyCard } from "./feishu_api.js";
 import { getPending, popNext, markDone } from "./inbox.js";
 import { registerSession, markIdle, isProcessAlive, getSession } from "./session_state.js";
-import { getPending as getSessionPending, dequeueAll, listPendingSessions, enqueue as enqueueSession } from "./session_queue.js";
-import { findClaudeProcess, findMyClaudeProcess, sendViaITerm } from "./terminal.js";
+import { getPending as getSessionPending, dequeueAll, listPendingSessions, markDelivered } from "./session_queue.js";
+import { detectState, findMyClaudeProcess, sendViaITerm } from "./terminal.js";
 import { log } from "./logger.js";
-import { DATA_DIR } from "./config.js";
-import { readFileSync, appendFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import { execSync } from "node:child_process";
 import { hostname } from "node:os";
+import { deliverMessagesSequentially } from "./session_delivery.js";
+import { deliverInboxPendingToTerminal } from "./inbox_delivery.js";
 
 // ============================================================
 // 类型
@@ -106,7 +107,7 @@ function buildContext(event: HookEvent): string {
       // 会话正常结束时展示最终输出，方便了解完成状态
       const output = getModelOutput(event);
       if (output) {
-        lines.push(`💬 **模型输出：**\n${wrapInCodeBlock(output)}`);
+        lines.push(`\n💬 **模型输出：**\n${wrapInCodeBlock(output)}`);
       }
       break;
     }
@@ -433,23 +434,6 @@ async function main(): Promise<void> {
   const type = g("--type") ?? "info";
   const event = readHookStdin();
 
-  // 诊断：保存完整 hook JSON 到文件，方便后续分析所有可用字段
-  if (event.hook_event_name) {
-    try {
-      appendFileSync(
-        resolve(DATA_DIR, "hook_dump.jsonl"),
-        JSON.stringify({
-          _ts: new Date().toISOString(),
-          _event: event.hook_event_name,
-          _keys: Object.keys(event).sort(),
-          ...event,
-        }) + "\n",
-      );
-    } catch {
-      /* ignore */
-    }
-  }
-
   // 拼接上下文：先给 ctx 留出空间，剩余字节全给 message
   const ctx = buildContext(event);
   const msgMaxBytes = Math.max(4000, CARD_CONTENT_MAX_BYTES - Buffer.byteLength(ctx, "utf-8"));
@@ -492,9 +476,39 @@ async function main(): Promise<void> {
       );
     }
 
+    let canDeliverSessionQueue = true;
+    if (proc && p.length) {
+      const results: string[] = [];
+      const delivery = await deliverInboxPendingToTerminal(
+        p,
+        {
+          getState: () => {
+            const state = detectState(event.transcript_path ?? "");
+            return state === "gone" && isProcessAlive(proc.pid) ? "waiting" : state;
+          },
+          send: (message, item) => {
+            const ok = sendViaITerm(proc.tty, message);
+            results.push(`${ok ? "✅" : "❌"} [${item.sender}]: ${message.slice(0, 80)}`);
+            return ok;
+          },
+          markDone,
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        },
+      );
+
+      canDeliverSessionQueue = delivery.reason === "done";
+      const pendingCount = delivery.failed + delivery.remaining;
+      await sendNotification(
+        `📥 已发送 ${delivery.sent} 条 inbox 指令`,
+        results.slice(-10).join("\n") + (pendingCount > 0 ? `\n\n⚠️ ${pendingCount} 条仍在 inbox 中等待下次投递` : ""),
+        pendingCount === 0 ? "success" : "warning",
+        sid,
+      );
+    }
+
     // 自动发送 session 队列中的待处理消息
     // 策略: 遍历所有 pending session，如果目标 session 已死或就是当前 session，则发送到当前终端
-    if (proc) {
+    if (proc && canDeliverSessionQueue) {
       const allPending = listPendingSessions();
       const toSend: Array<{ session_id: string; count: number; messages: ReturnType<typeof dequeueAll> }> = [];
 
@@ -511,7 +525,7 @@ async function main(): Promise<void> {
             const msgs = dequeueAll(targetSid);
             if (msgs.length) toSend.push({ session_id: targetSid, count, messages: msgs });
           }
-          // 目标 session 还活着 → 跳过，让 feishu_bot 或 startWaitAndSend 处理
+          // 目标 session 还活着 → 跳过，让 feishu_bot 的串行投递器处理
         }
       }
 
@@ -520,21 +534,26 @@ async function main(): Promise<void> {
         log(`📬 SessionStart: 发送 ${allMsgs.length} 条队列消息 (来自 ${toSend.length} 个 session)`);
 
         const results: string[] = [];
-        for (const m of allMsgs) {
-          const ok = sendViaITerm(proc.tty, m.content);
-          results.push(`${ok ? "✅" : "❌"} [${m.sender}]: ${m.content.slice(0, 80)}`);
-          if (!ok) {
-            // 发送失败，重新入队
-            enqueueSession({ ...m, status: "pending" });
-          }
-        }
+        const delivery = await deliverMessagesSequentially(allMsgs, {
+          getState: () => {
+            const state = detectState(event.transcript_path ?? "");
+            return state === "gone" && isProcessAlive(proc.pid) ? "waiting" : state;
+          },
+          send: (message, item) => {
+            const sender = "sender" in item && typeof item.sender === "string" ? item.sender : "";
+            const ok = sendViaITerm(proc.tty, message);
+            results.push(`${ok ? "✅" : "❌"} [${sender}]: ${message.slice(0, 80)}`);
+            return ok;
+          },
+          markDelivered,
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        });
 
-        const successCount = results.filter((r) => r.startsWith("✅")).length;
-        const failCount = results.length - successCount;
+        const pendingCount = delivery.failed + delivery.remaining;
         await sendNotification(
-          `📬 已发送 ${successCount} 条队列消息`,
-          results.slice(-10).join("\n") + (failCount > 0 ? `\n\n⚠️ ${failCount} 条发送失败，已重新入队` : ""),
-          successCount === results.length ? "success" : "warning",
+          `📬 已发送 ${delivery.sent} 条队列消息`,
+          results.slice(-10).join("\n") + (pendingCount > 0 ? `\n\n⚠️ ${pendingCount} 条仍在队列中等待下次投递` : ""),
+          pendingCount === 0 ? "success" : "warning",
           sid,
         );
       }
@@ -542,7 +561,7 @@ async function main(): Promise<void> {
   }
 
   // Stop / StopFailure / SessionEnd: 标记空闲 + 检查队列
-  // 延时 6 秒再检查，给 startWaitAndSend 轮询投递留出窗口
+  // 延时 6 秒再检查，给后台串行投递留出窗口
   if (sid && (event.hook_event_name === "Stop" || event.hook_event_name === "StopFailure" || event.hook_event_name === "SessionEnd")) {
     markIdle(sid);
     await new Promise((r) => setTimeout(r, 6000));

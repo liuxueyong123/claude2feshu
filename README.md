@@ -11,7 +11,7 @@ Claude Code ↔ 飞书双向通信。在飞书群里 **@机器人** 发送指令
 
 - 只想跑起来：看 [快速开始](#快速开始)、[命令参考](#命令参考)、[日志与诊断](#日志与诊断)。
 - 想理解完整机制：从 [系统架构](#系统架构) 开始，再看 [入站流程](#入站流程-飞书--claude-code-终端)、[出站流程](#出站流程-claude-code--飞书群) 和 [完整场景时序](#完整场景时序)。
-- 想排查路由问题：重点看 `card_session_map.jsonl`、`session_states.json`、`feishu_session_queue.jsonl`、`hook_dump.jsonl` 和 `message_dump.jsonl`。
+- 想排查路由问题：重点看 `card_session_map.jsonl`、`session_states.json`、`feishu_session_queue.jsonl` 和 `message_dump.jsonl`。
 
 ## 目录
 
@@ -136,6 +136,9 @@ pnpm status       # 验证运行状态
 
 | 命令                | 说明                         |
 | ------------------- | ---------------------------- |
+| `pnpm test`         | 运行 Node test 测试套件      |
+| `pnpm typecheck`    | TypeScript 静态类型检查      |
+| `pnpm build`        | 编译到 `dist/`               |
 | `pnpm test-webhook` | 测试 API 发送卡片            |
 | `pnpm test-api`     | 测试 API 拉取消息 (不过滤 @) |
 
@@ -147,12 +150,6 @@ pnpm status       # 验证运行状态
 
 ```bash
 tail -f ~/.claude/feishu/feishu_bot.log
-```
-
-Hook 原始数据:
-
-```bash
-tail -5 ~/.claude/feishu/hook_dump.jsonl
 ```
 
 引用消息原始数据（有 parent_id/root_id 时记录）:
@@ -220,7 +217,6 @@ TypeScript + Node.js 22 + tsx + 飞书 Open API + AppleScript (iTerm2)
 | `feishu_bot.pid`             | 文本         | 守护进程 PID                                           |
 | `feishu_bot.log`             | 文本 (追加)  | 守护进程日志                                           |
 | `feishu_error.log`           | 文本 (追加)  | 飞书 API 发送失败等 hook 环境错误诊断                  |
-| `hook_dump.jsonl`            | JSONL (追加) | Hook 原始 JSON 诊断数据                                |
 | `message_dump.jsonl`         | JSONL (追加) | 引用消息原始数据诊断                                   |
 
 ### 两大消息流向
@@ -244,9 +240,13 @@ TypeScript + Node.js 22 + tsx + 飞书 Open API + AppleScript (iTerm2)
    a. listChats() → GET /im/v1/chats 获取所有群聊列表
    b. 对每个群聊调用 listChatMessages() → GET /im/v1/messages?sort_type=ByCreateTimeDesc
    c. mentionsBot() 过滤 @机器人的消息:
+      - bot open_id 为空时直接返回 false
       - 优先检查 mentions 数组（飞书结构化 @提及）
         mentions[i].id 可能是字符串(open_id)或对象{open_id: "..."}
-      - 回退文本匹配（消息 body 中是否包含 bot open_id）
+        如果 mentions 存在但不包含 bot open_id，直接返回 false
+      - 无 mentions 数组时回退正文匹配:
+        text 消息要求 body.text 包含 bot open_id
+        post 富文本要求 at 节点的 user_id/open_id/id 等于 bot open_id
    d. 跨群聚合所有 @消息，按 create_time 降序排列，取前 20 条
 3. 从最新消息往前遍历，遇到 lastId（checkpoint）就停止 → 增量拉取
 4. 对每条新消息（reverse 后按时间正序）执行处理
@@ -376,8 +376,10 @@ lookupCardSession(quotedMessageId):
 │  if !routed:                                                    │
 │    enqueueCommand(id, chatId, sender, text, msg.create_time)    │
 │    → 写入 feishu_inbox.jsonl                                    │
-│    replyCard(id, "✅ 收到指令", "内容：...\nClaude Code 正在处理") │
-│    → 通知用户消息已收到，等待 Claude Code 启动                      │
+│    replyCard(id, "⏳ 等待 Claude Code 启动",                       │
+│      "当前没有可用的 Claude Code 终端，消息已暂存到 inbox。          │
+│       启动 Claude Code 后会自动发送到终端。")                       │
+│    → 明确通知用户当前没有运行中的 Claude Code，只是暂存消息          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -425,23 +427,18 @@ lookupCardSession(quotedMessageId):
    │          │ replyCard("⏳ Claude 处理中",                       │
    │          │   "Claude Code 正在执行任务，消息已暂存。")           │
    │          │                                                    │
-   │          │ startWaitAndSend(                                  │
-   │          │   sid, tty, transcriptPath, text,                  │
-   │          │   onDelivered: (success, reason) => {              │
-   │          │     log("延迟发送: " + reason)                      │
-   │          │     if (success) markDelivered(msgId)              │
-   │          │   }                                               │
-   │          │ )                                                 │
-   │          │ → 后台每 3s 检测 detectState()                      │
-   │          │   waiting → sendViaITerm → 回调                    │
+   │          │ scheduleSessionDelivery(sid, tty, transcriptPath)  │
+   │          │ → 每个 session 只启动一个后台串行投递器              │
+   │          │ → deliverMessagesSequentially()                    │
+   │          │   waiting → sendViaITerm → markDelivered(msgId)    │
    │          │   busy    → 继续轮询 (最长 5 分钟)                  │
-   │          │   gone    → 回调(失败)                              │
-   │          │   超时     → 回调(超时)                              │
+   │          │   gone    → 停止投递，消息保持 pending              │
+   │          │   多条消息 → 等上一条使 session 离开 waiting 后再投下一条 │
    ├──────────┼────────────────────────────────────────────────────┤
    │ gone     │ enqueueSession(msg) → 写入 session_queue           │
    │(进程已死) │ replyCard("⏳ 会话已退出",                          │
    │          │   "Claude Code 会话已结束，消息已暂存。")            │
-   │          │ → 下次 SessionStart 时通知用户处理                   │
+   │          │ → 下次 SessionStart 时自动投递到新终端               │
    └──────────┴────────────────────────────────────────────────────┘
 ```
 
@@ -473,41 +470,43 @@ lookupCardSession(quotedMessageId):
    → 其他 / 异常 → false (失败)
 ```
 
-### 步骤 8: 延迟投递轮询 — `startWaitAndSend()`
+### 步骤 8: 延迟串行投递 — `deliverMessagesSequentially()`
 
 ```
-当 Claude 处于 busy 状态时，启动异步轮询:
+当 Claude 处于 busy 状态时，消息先进入 session_queue，然后由每个 session 一个的后台投递器串行处理。
 
 参数:
-  - sessionId: 用于日志
-  - tty: iTerm2 终端标识
-  - transcriptPath: transcript 文件路径
-  - message: 待发送的消息文本
-  - onDelivered(success, reason): 完成回调
+  - messages: 当前待投递消息快照
+  - getState(): 读取 transcript 并返回 waiting/busy/gone
+  - send(message): 通过 iTerm2 写入终端
+  - markDelivered(id): 仅在 send 成功后标记 delivered
+  - onDelivered(item): 成功后的回复卡片等副作用
 
 轮询逻辑:
-  首次: 延迟 2000ms 后开始
   间隔: 3000ms
-  超时: 300000ms (5 分钟)
+  等待 Claude 变为 waiting 的超时: 300000ms (5 分钟)
+  发送后等待 session 离开 waiting 的超时: 10000ms (10 秒)
 
-  每次 tick:
+  对每条消息:
     state = detectState(transcriptPath)
 
     if state === "waiting":
       ok = sendViaITerm(tty, message)
-      ok ? onDelivered(true, "已自动发送到 Claude Code 终端")
-         : onDelivered(false, "终端发送失败")
-      return  // 停止轮询
+      ok ? markDelivered(msgId)
+         : 保持 pending，停止本轮投递
+
+      如果后面还有消息:
+        先等待 state !== "waiting"
+        这样避免多条消息在同一个空闲窗口连续写入终端
 
     if state === "gone":
-      onDelivered(false, "Claude Code 进程已退出")
-      return
+      停止投递，消息保持 pending
 
-    if state === "busy" && elapsed < maxWait:
-      setTimeout(poll, 3000)  // 继续等待
+    if state === "busy":
+      sleep(3000) 后继续等待
 
-    if elapsed > maxWait:
-      onDelivered(false, "超时: 5 分钟内未变为等待状态")
+    if 超时:
+      停止投递，消息保持 pending
 ```
 
 ---
@@ -557,11 +556,7 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
    - 从 process.stdin.fd 读取 JSON
    - 非 TTY stdin 时返回 {}（CLI 手动调用时不解析 stdin）
 
-2. saveHookDump():
-   - 将完整 hook JSON + _ts(时间戳) + _event(事件名) + _keys(字段列表)
-   - 写入 hook_dump.jsonl（诊断用）
-
-3. buildContext(event):
+2. buildContext(event):
    返回拼接后的通知卡片内容，包含:
 
    通用信息 (所有事件):
@@ -599,6 +594,12 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
      PostToolUseFailure:
        → toolLabel + tool_input + event.error
 
+3. 组合 fullMessage:
+   - ctx = buildContext(event)
+   - CARD_CONTENT_MAX_BYTES = 24000
+   - message 按 UTF-8 字节截断，给 ctx 和卡片结构保留空间
+   - fullMessage = clipBytes(message, msgMaxBytes) + ctx
+
 4. sendNotification(title, fullMessage, type, sessionId):
    → sendChatCard(title, fullMessage, color, sessionId)
 ```
@@ -611,6 +612,11 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
    getDefaultChatId(): listChats() → 取第一个群聊
 
 2. 构建卡片 (飞书卡片 JSON 2.0):
+   buildCard(title, content, color)
+   - 先构建完整卡片 JSON
+   - 按最终 JSON 字节数检查是否超过 30000 bytes
+   - 如果超限，对 markdown content 做二分截断，并追加省略号
+
    {
      schema: "2.0",
      config: { update_multi: true },
@@ -699,19 +705,27 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
    → 写入 session_states.json
 
 3. 检查通用 inbox (getPending):
-   有 pending → 发送提醒卡片（列出最近 3 条）
+   有 pending:
+     a. 发送提醒卡片（列出最近 3 条）
+     b. deliverInboxPendingToTerminal() 自动投递到当前终端
+     c. 发送成功 → markDone(msgId, "sent_to_terminal")
+     d. 发送失败 / 未轮到投递 → 保持 pending，等待下次 SessionStart 或手动处理
+
+   注意: inbox 自动投递会等待最后一条发送后 Claude 离开 waiting 状态。
+        如果无法确认 Claude 已开始处理，会暂缓后续 session_queue 投递，避免连续写入终端。
 
 4. 检查 session_queue (listPendingSessions):
    对每个有 pending 的 session:
-     a. targetSid === 当前 sid → dequeueAll() 取出消息
-     b. 目标 session 进程已死    → dequeueAll() 取出消息
-     c. 目标 session 进程存活    → 跳过（让 feishu_bot 或 startWaitAndSend 处理）
+     a. targetSid === 当前 sid → dequeueAll() 读取 pending 消息
+     b. 目标 session 进程已死    → dequeueAll() 读取 pending 消息
+     c. 目标 session 进程存活    → 跳过（让 feishu_bot 的串行投递器处理）
 
-   对所有取出的消息:
-     sendViaITerm(proc.tty, msg.content) → ✅/❌
-     失败的 → enqueueSession() 重新入队
+   对所有读取到的消息:
+     deliverMessagesSequentially() 串行投递
+     发送成功 → markDelivered(msgId)
+     发送失败 / 未轮到投递 → 保持 pending
 
-   发送结果通知卡片 (成功 N 条 / 失败 M 条)
+   发送结果通知卡片 (成功 N 条 / 仍待投递 M 条)
 ```
 
 #### Stop / StopFailure / SessionEnd
@@ -725,7 +739,7 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
 2. getSessionPending(sid):
    检查 session_queue 中是否有该 session 的待处理消息
    注意: notify.ts 会先等待 6 秒，再检查队列
-        这给 startWaitAndSend() 的 busy→waiting 自动投递留出时间窗口
+        这给后台串行投递留出时间窗口
    有 → 发送提醒卡片:
      "📬 任务结束，待处理消息"
      "N 条消息等待处理"
@@ -812,9 +826,9 @@ feishu_session_queue.jsonl → 每行一条 QueuedMessage:
 
 ```
 enqueue(msg):              追加写入 JSONL
-dequeueAll(sid):           取出某 session 所有 pending → 标记为 delivered
+dequeueAll(sid):           读取某 session 所有 pending（不改变状态）
 getPending(sid):           只读查看某 session 的 pending
-markDelivered(msgId):      标记单条为 delivered（startWaitAndSend 成功回调）
+markDelivered(msgId):      确认成功写入终端后，标记单条为 delivered
 listPendingSessions():     统计各 session 的 pending 数量
 pendingCount(sid):         某 session 的 pending 数量
 ```
@@ -853,6 +867,12 @@ popNext():
 
 markDone(id, result?):
   → status = "done", done_at = now, result 可选
+
+SessionStart 自动投递:
+  → getPending() 读取所有 pending inbox 消息
+  → deliverInboxPendingToTerminal() 按顺序发送到当前终端
+  → 成功发送的消息 markDone(id, "sent_to_terminal")
+  → 发送失败 / 未轮到投递的消息保持 pending
 
 clearDone():
   → 删除所有 done 记录，保留 pending + in_progress
@@ -1026,11 +1046,11 @@ T+3s   用户又 @机器人 "再检查一下"
        detectState() → "busy"
        enqueueSession(msg) → session_queue
        replyCard("⏳ Claude 处理中", "消息已暂存...")
-       startWaitAndSend() → 后台每 3s 检测
+       scheduleSessionDelivery() → 后台串行投递器每 3s 检测
 
 T+30s  Claude 处理完毕
        transcript: assistant + stop_reason="end_turn" → waiting
-       startWaitAndSend 检测到 waiting
+       deliverMessagesSequentially 检测到 waiting
        sendViaITerm("再检查一下") → ✅
        markDelivered(msgId)
 
@@ -1113,15 +1133,18 @@ T+5s   用户飞书 @机器人 "运行测试"
        feishu_bot 轮询到消息
        listActive() → [] (进程已退出)
        → 通用 inbox: enqueueCommand(...)
-       → replyCard("✅ 收到指令", "Claude Code 正在处理...")
+       → replyCard("⏳ 等待 Claude Code 启动", "消息已暂存到 inbox，启动后自动发送")
 
 T+60s  用户重新启动 Claude Code
        SessionStart hook 触发
        getPending() → 有 1 条 pending
        sendNotification("📥 飞书待处理指令", "1 条: 运行测试")
+       deliverInboxPendingToTerminal()
+       sendViaITerm("运行测试") → ✅
+       markDone(msgId, "sent_to_terminal")
 
        同时检查 session_queue 是否有该用户的其他 session 遗留消息
-       → 取出并自动发送到当前终端
+       → 若 inbox 已确认 Claude 开始处理，再继续串行投递 session_queue
 ```
 
 ---
@@ -1173,12 +1196,17 @@ src/
 ├── session_queue.ts   # Session 专用延迟队列
 │                      #  - JSONL 读写 (feishu_session_queue.jsonl)
 │                      #  - enqueue: 追加写入
-│                      #  - dequeueAll: 批量取出 + 标记 delivered
+│                      #  - dequeueAll: 批量读取 pending，不提前确认 delivered
 │                      #  - getPending / markDelivered / listPendingSessions
+├── session_delivery.ts # Session 串行投递
+│                      #  - deliverMessagesSequentially: 等待 waiting 后逐条投递
+│                      #  - 发送成功后 markDelivered，失败/未投递保持 pending
+├── inbox_delivery.ts  # Inbox 自动投递
+│                      #  - deliverInboxPendingToTerminal: SessionStart 时投递 pending inbox
+│                      #  - 成功后 markDone("sent_to_terminal")，失败保持 pending
 ├── terminal.ts        # 终端交互 (macOS + iTerm2)
 │                      #  - detectState: 读 transcript 判断 Claude 状态
 │                      #  - sendViaITerm: AppleScript 发送文本
-│                      #  - startWaitAndSend: 轮询等待后发送 (busy→waiting)
 │                      #  - findMyClaudeProcess: 沿 PPID 链定位当前 hook 所属 Claude 进程
 │                      #  - findClaudeProcess: 全局 ps 查找 Claude Code 进程（回退）
 │                      #  - detectTTY: tty 命令获取当前终端名
@@ -1194,13 +1222,17 @@ src/
 │                      #  - toolLabel: 工具名中文映射
 │                      #  - SessionStart: 注册 session + inbox/queue 检查 + 自动发送
 │                      #  - Stop/StopFailure/SessionEnd: 标记空闲 + 队列提醒
-│                      #  - hook_dump.jsonl 诊断数据写入
 └── cli.ts             # 统一 CLI 入口
                        #  - daemon 模式: spawn 子进程 + stdio 重定向
                        #  - 守护进程管理: start/stop/restart/status
                        #  - Inbox 管理: inbox/pop/done/reply/clear
                        #  - Session 管理: session-list/state/queue/send
-                       #  - 测试: test-webhook/test-api
+                       #  - 测试: test / test-webhook / test-api
+tests/
+├── feishu_api.test.ts       # @过滤 + 卡片 payload 大小
+├── inbox_delivery.test.ts   # Inbox 自动投递 + 状态推进
+├── session_delivery.test.ts # Session 串行投递
+└── session_queue.test.ts    # pending/delivered 队列确认语义
 ```
 
 ## License

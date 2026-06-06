@@ -16,6 +16,7 @@
     "clear":         "npx tsx src/cli.ts clear",
     "test-webhook":  "npx tsx src/cli.ts test-webhook",
     "test-api":      "npx tsx src/cli.ts test-api",
+    "test":          "node --import tsx --test tests/*.test.ts",
     "session-list":  "npx tsx src/cli.ts session-list",
     "session-state": "npx tsx src/cli.ts session-state",
     "session-queue": "npx tsx src/cli.ts session-queue",

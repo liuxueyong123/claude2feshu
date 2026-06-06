@@ -3,7 +3,7 @@
  *
  * 存储: ~/.claude/feishu/feishu_session_queue.jsonl
  * 写入: feishu_bot.ts (检测到引用消息且 session 非 waiting 时)
- * 读取: notify.ts (Stop/StopFailure/SessionEnd 时取出), feishu_bot.ts (投递后标记)
+ * 读取: notify.ts / feishu_bot.ts 投递队列时读取 pending，发送成功后标记 delivered
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -59,18 +59,9 @@ export function enqueue(msg: QueuedMessage): void {
   writeFileSync(QUEUE_FILE, JSON.stringify(msg) + "\n", { flag: "a" });
 }
 
-/** 取出指定 session 的所有 pending 消息，标记为 delivered */
+/** 读取指定 session 的所有 pending 消息。发送成功后由 markDelivered() 确认。 */
 export function dequeueAll(sid: string): QueuedMessage[] {
-  const items = load();
-  const result: QueuedMessage[] = [];
-  for (const item of items) {
-    if (item.session_id === sid && item.status === "pending") {
-      item.status = "delivered";
-      result.push(item);
-    }
-  }
-  if (result.length) save(items);
-  return result;
+  return getPending(sid);
 }
 
 /** 获取指定 session 的 pending 消息数量 */
@@ -83,7 +74,7 @@ export function getPending(sid: string): QueuedMessage[] {
   return load().filter((i) => i.session_id === sid && i.status === "pending");
 }
 
-/** 标记单条消息为 delivered（startWaitAndSend 成功回调用） */
+/** 标记单条消息为 delivered（确认已成功写入终端后调用） */
 export function markDelivered(msgId: string): void {
   const items = load();
   const item = items.find((i) => i.id === msgId && i.status === "pending");

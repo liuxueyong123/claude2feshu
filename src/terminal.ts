@@ -111,49 +111,6 @@ end tell`.trim();
   }
 }
 
-/**
- * 轮询等待 Claude 变为 waiting 状态，然后自动发送。
- *
- * 每 3s 检查 detectState()，最长等待 5 分钟。
- * 成功/失败/超时均回调 onDelivered。
- */
-export function startWaitAndSend(
-  _sessionId: string,
-  tty: string,
-  transcriptPath: string,
-  message: string,
-  onDelivered: (success: boolean, reason: string) => void,
-): void {
-  const startedAt = Date.now();
-  const maxWait = 300_000; // 5 分钟
-  const interval = 3000;   // 3 秒
-
-  function poll(): void {
-    const elapsed = Date.now() - startedAt;
-    if (elapsed > maxWait) {
-      onDelivered(false, "超时: Claude 在 5 分钟内未变为等待状态，消息已入队");
-      return;
-    }
-
-    const state = detectState(transcriptPath);
-    if (state === "waiting") {
-      const ok = sendViaITerm(tty, message);
-      if (ok) {
-        onDelivered(true, "已自动发送到 Claude Code 终端");
-      } else {
-        onDelivered(false, "终端发送失败，请检查 iTerm2 是否运行，消息已入队");
-      }
-    } else if (state === "gone") {
-      onDelivered(false, "Claude Code 进程已退出，消息已入队");
-    } else {
-      setTimeout(poll, interval);
-    }
-  }
-
-  // 延迟首次检查
-  setTimeout(poll, 2000);
-}
-
 // ---- 辅助 ----
 
 function escapeAppleScript(s: string): string {

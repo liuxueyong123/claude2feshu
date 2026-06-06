@@ -115,20 +115,22 @@ export async function listReceivedMessages(pageSize = 20, onlyMentions = true): 
     }
   }
   all.sort((a, b) => b.create_time.localeCompare(a.create_time));
-  log(`聚合: ${all.length} 条 (@过滤, ${chats.length} 群)`, "DEBUG");
   return all.slice(0, pageSize);
 }
 
 // ---- @提及检测 ----
 
-function mentionsBot(msg: FeishuMessage, botId: string): boolean {
+export function mentionsBot(msg: FeishuMessage, botId: string): boolean {
+  if (!botId) return false;
+
   // 优先检查 mentions 数组（飞书结构化 @提及）
-  if (msg.mentions?.length && botId) {
+  if (msg.mentions?.length) {
     for (const m of msg.mentions) {
       // m.id 可能是字符串（直接是 open_id），也可能是对象 { open_id: "..." }
       const mid = typeof m.id === "string" ? m.id : ((m.id as Record<string, unknown>)?.open_id as string | undefined);
       if (mid === botId) return true;
     }
+    return false;
   }
 
   // 回退：检查消息正文文本
@@ -138,22 +140,23 @@ function mentionsBot(msg: FeishuMessage, botId: string): boolean {
     const obj = JSON.parse(content) as Record<string, unknown>;
     const text = (obj.text as string) ?? "";
     if (text.includes("@")) {
-      if (botId) return text.includes(botId);
-      return true;
+      return text.includes(botId);
     }
-    if (obj.content && typeof obj.content === "object") return hasAt(obj.content);
+    if (obj.content && typeof obj.content === "object") return hasAtBot(obj.content, botId);
   } catch {
     /* */
   }
   return false;
 }
 
-function hasAt(node: unknown): boolean {
-  if (Array.isArray(node)) return node.some(hasAt);
+function hasAtBot(node: unknown, botId: string): boolean {
+  if (Array.isArray(node)) return node.some((item) => hasAtBot(item, botId));
   if (node && typeof node === "object") {
     const obj = node as Record<string, unknown>;
-    if (obj.tag === "at") return true;
-    return Object.values(obj).some(hasAt);
+    if (obj.tag === "at") {
+      return obj.user_id === botId || obj.open_id === botId || obj.id === botId;
+    }
+    return Object.values(obj).some((value) => hasAtBot(value, botId));
   }
   return false;
 }
@@ -282,7 +285,9 @@ export async function replyCard(msgId: string, title: string, content: string, c
  * JSON 2.0 的 markdown 组件支持代码块、行内代码、标题等完整语法。
  * 需飞书客户端 ≥ 7.20（2024+ 版本）。
  */
-function buildCard(title: string, content: string, color: string): string {
+const CARD_MAX_BYTES = 30_000;
+
+function rawCard(title: string, content: string, color: string): string {
   const timeStr = new Date(Date.now() + 8 * 3600_000).toISOString().replace("T", " ").slice(0, 19);
   return JSON.stringify({
     schema: "2.0",
@@ -292,6 +297,30 @@ function buildCard(title: string, content: string, color: string): string {
       elements: [{ tag: "markdown", content }, { tag: "hr" }, { tag: "markdown", content: `*⏱ ${timeStr}  ·  Claude Code*`, text_size: "notation" }],
     },
   });
+}
+
+export function buildCard(title: string, content: string, color: string): string {
+  const full = rawCard(title, content, color);
+  if (Buffer.byteLength(full, "utf-8") <= CARD_MAX_BYTES) return full;
+
+  const chars = Array.from(content);
+  let lo = 0;
+  let hi = chars.length;
+  let best = rawCard(title, "", color);
+
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const truncated = chars.slice(0, mid).join("") + (mid < chars.length ? "\n\n…" : "");
+    const candidate = rawCard(title, truncated, color);
+    if (Buffer.byteLength(candidate, "utf-8") <= CARD_MAX_BYTES) {
+      best = candidate;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  return best;
 }
 
 /** 通过 API 向指定群聊发送卡片消息。返回 sent_message_id 或空字符串。 */
