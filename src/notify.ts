@@ -6,6 +6,7 @@ import { sendChatCard, replyCard } from "./feishu_api.js";
 import { getInboxPending, getPending as getPendingMessages, markDelivered } from "./message_queue.js";
 import { registerSession, markIdle, isProcessAlive, getSession } from "./session_state.js";
 import { findMyClaudeProcess, sendViaITerm } from "./terminal.js";
+import { getLastDelivery, clearDelivery } from "./delivery_tracker.js";
 import { log } from "./logger.js";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, basename } from "node:path";
@@ -467,10 +468,26 @@ async function main(): Promise<void> {
   const msgMaxBytes = Math.max(4000, CARD_CONTENT_MAX_BYTES - Buffer.byteLength(ctx, "utf-8"));
   const fullMessage = clipBytes(message, msgMaxBytes) + ctx;
 
-  await sendNotification(title, fullMessage, type, event.session_id ?? "");
+  const sid = event.session_id ?? "";
+
+  // Stop/StopFailure: 尝试引用回复原始飞书消息，形成对话线程
+  let notificationSent = false;
+  if (sid && (event.hook_event_name === "Stop" || event.hook_event_name === "StopFailure")) {
+    const replyMsgId = getLastDelivery(sid);
+    if (replyMsgId) {
+      const ok = await replyCard(replyMsgId, title, fullMessage, COLORS[type] ?? "blue", sid);
+      if (ok) {
+        clearDelivery(sid);
+        notificationSent = true;
+        log(`引用回复: ${replyMsgId.slice(0, 16)}...`, "DEBUG");
+      }
+    }
+  }
+  if (!notificationSent) {
+    await sendNotification(title, fullMessage, type, sid);
+  }
 
   // ---- Session 生命周期管理 ----
-  const sid = event.session_id ?? "";
 
   if (event.hook_event_name === "SessionStart" && sid) {
     // 注册 session：沿进程树向上查找触发本 hook 的 Claude Code 进程

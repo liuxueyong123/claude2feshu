@@ -13,6 +13,7 @@ import { getPending, markDelivered } from "./message_queue.js";
 import { detectState } from "./terminal.js";
 import type { ClaudeState } from "./terminal.js";
 import { isProcessAlive, getSession } from "./session_state.js";
+import { recordDelivery } from "./delivery_tracker.js";
 
 // ---- 类型 ----
 
@@ -80,6 +81,7 @@ export async function deliverNextPending(deps: OrchestratorDeps): Promise<Orches
   }
 
   markDelivered(item.id);
+  recordDelivery(deps.sessionId, item.id);
   await deps.replyCard(
     item.id,
     "✅ 已投递",

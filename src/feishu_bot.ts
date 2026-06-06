@@ -8,6 +8,7 @@ import { enqueue, pendingCount } from "./message_queue.js";
 import type { QueuedMessage } from "./message_queue.js";
 import { detectState, sendViaITerm } from "./terminal.js";
 import { getSession, findByPrefix, listActive, isProcessAlive } from "./session_state.js";
+import { recordDelivery } from "./delivery_tracker.js";
 
 let running = true;
 
@@ -190,6 +191,7 @@ async function handleSessionMessage(msgId: string, chatId: string, sender: strin
       const ok = sendViaITerm(session.tty, text);
       if (ok) {
         await replyCard(msgId, "✅ 已投递", `指令已发送到终端处理。\n\n> ${text.slice(0, 200)}`, "green", sid);
+        recordDelivery(sid, msgId);
         log(`  ✅ 已发送`);
       } else {
         enqueue(makeSessionMsg(msgId, chatId, sender, text, sid));

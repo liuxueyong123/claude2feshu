@@ -184,27 +184,30 @@ TypeScript + Node.js 22 + tsx + 飞书 Open API + AppleScript (iTerm2)
 ## 系统架构
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                           claude2feishu                                   │
-│                                                                          │
-│  ┌─────────────┐    ┌──────────────────┐    ┌──────────────────┐        │
-│  │  feishu_bot  │───▶│  session_state   │    │  message_queue   │        │
-│  │  (守护进程)   │    │  (PID/TTY 映射)   │    │  (统一待投递队列)   │        │
-│  └──────┬───────┘    └──────────────────┘    └────────┬─────────┘        │
-│         │              ▲           │                 ▲         │          │
-│         │              │ 读写       │ 写入             │ 读写     │ 读写     │
-│         ▼              │           ▼                 │         ▼          │
-│  ┌──────────────┐    ┌─┴──────────────────┐    ┌─────┴──────────────┐   │
-│  │  feishu_api  │    │     terminal       │    │ delivery_          │   │
-│  │  (API 客户端) │    │  (状态检测+发送)    │    │ orchestrator       │   │
-│  └──────────────┘    └────────────────────┘    │ (Hook 驱动串行投递) │   │
-│                                                 └────────┬──────────┘   │
-│                                                          │              │
-│  ┌──────────────┐    ┌──────────────────┐               │              │
-│  │    cli.ts    │    │     notify       │◀──────────────┘              │
-│  │  (CLI 入口)   │    │  (Hook 入口)      │                              │
-│  └──────────────┘    └──────────────────┘                              │
-└──────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              claude2feishu                                    │
+│                                                                              │
+│  ┌─────────────┐    ┌──────────────────┐    ┌──────────────────┐            │
+│  │  feishu_bot  │───▶│  session_state   │    │  message_queue   │            │
+│  │  (守护进程)   │    │  (PID/TTY 映射)   │    │  (统一待投递队列)   │            │
+│  └──────┬───────┘    └──────────────────┘    └────────┬─────────┘            │
+│         │              ▲           │                 ▲         │              │
+│         │              │ 读写       │ 写入             │ 读写     │ 读写         │
+│         ▼              │           ▼                 │         ▼              │
+│  ┌──────────────┐    ┌─┴──────────────────┐    ┌─────┴──────────────┐       │
+│  │  feishu_api  │    │     terminal       │    │ delivery_          │       │
+│  │  (API 客户端) │    │  (状态检测+发送)    │    │ orchestrator       │       │
+│  └──────────────┘    └────────────────────┘    │ (Hook 驱动串行投递) │       │
+│          ▲                                     └────────┬──────────┘       │
+│          │                                              │                  │
+│  ┌───────┴───────┐    ┌──────────────────┐             │                  │
+│  │delivery_tracker│   │     notify       │◀────────────┘                  │
+│  │(投递追踪映射)   │◀──│  (Hook 入口)      │                               │
+│  └───────────────┘    └──────────────────┘                               │
+│        │                                                                 │
+│        │ Stop 时查询 msgId → replyCard 引用回复原始消息                     │
+│        │ 投递时写入 session→msgId                                        │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 数据文件 (全部在 `~/.claude/feishu/`)
@@ -219,15 +222,18 @@ TypeScript + Node.js 22 + tsx + 飞书 Open API + AppleScript (iTerm2)
 | `feishu_bot.log`             | 文本 (追加)  | 守护进程日志                                           |
 | `feishu_error.log`           | 文本 (追加)  | 飞书 API 发送失败等 hook 环境错误诊断                  |
 | `message_dump.jsonl`         | JSONL (追加) | 引用消息原始数据诊断                                   |
+| `delivery_tracker.json`      | JSON         | session_id → 飞书消息 ID 映射，Stop 时引用回复用         |
 
 ### 两大消息流向
 
 ```
 出站 (Claude → 飞书):   Hook 事件 → notify.ts → feishu_api.ts → 飞书群卡片
+                         Stop 时查询 delivery_tracker → replyCard 引用回复原始消息
                          SessionStart/Stop 额外触发 deliverNextPending() → 投递队列中的下一条消息
 
 入站 (飞书 → Claude):   轮询 API → feishu_bot.ts → 路由分发 → terminal.ts sendViaITerm()
                          无法立即投递 → enqueue() → 等待 hook 触发 deliverNextPending()
+                         投递成功 → recordDelivery(session, msgId) 写入映射
 ```
 
 ---
@@ -447,14 +453,22 @@ lookupCardSession(quotedMessageId):
 1. 转义消息文本 (AppleScript 安全):
    \ → \\,  " → \",  换行 → 空格,  \r → 空
 
-2. 构造 AppleScript:
+2. 对 "/" 开头的 slash 命令特殊处理（防止 TUI 命令面板吞字符）:
+   write text "/" newline false     ← 只发 "/" 不回车
+   delay 0.3                        ← 等 Claude Code 命令面板打开
+   write text "context"             ← 再发剩余内容（带默认回车）
+
+   普通消息:
+   write text "${escaped_message}"  ← 一次性发送
+
+3. 构造 AppleScript:
    tell application "iTerm2"
      repeat with w in windows
        repeat with t in tabs of w
          repeat with s in sessions of t
            if (tty of s) ends with "{tty}" then
              tell s
-               write text "{escaped_message}"
+               ${writeOp}
              end tell
              return "ok"
            end if
@@ -464,10 +478,14 @@ lookupCardSession(quotedMessageId):
      return "not_found"
    end tell
 
-3. execSync("osascript", {input: script, timeout: 5000})
+4. execSync("osascript", {input: script, timeout: 5000})
    → result === "ok" → true (成功)
    → 其他 / 异常 → false (失败)
 ```
+
+> **为什么 slash 命令要延迟拆分？** 一次性 `write text "/context\n"` 会导致所有字符瞬间到达 PTY，
+> Claude Code 的 TUI 收到 `/` 后需要 React 渲染周期来切换命令面板 UI。后续字符如果在渲染完成前到达可能丢失。
+> 先发 `/` 等 300ms 再发剩余内容，给 TUI 足够时间完成状态切换。
 
 ### 步骤 8: 单条延迟投递 — `deliverNextPending()`
 
@@ -714,16 +732,25 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
 #### Stop / StopFailure / SessionEnd
 
 ```
-1. markIdle(sid):
+1. 通知发送:
+   Stop / StopFailure:
+     a. getLastDelivery(sid): 从 delivery_tracker.json 查询最近投递的飞书消息 ID
+     b. 有记录: replyCard(msgId, title, message) → 引用回复原始消息，形成对话线程
+        clearDelivery(sid) → 清除记录
+     c. 无记录: sendChatCard(title, message) → 回退为独立群聊消息
+   SessionEnd / 其他:
+     → sendChatCard(title, message) → 独立群聊消息
+
+2. markIdle(sid):
    session.status = "idle"
    session.last_heartbeat = now
    → 写入 session_states.json
 
-2. deliverNextPending(currentSession):
+3. deliverNextPending(currentSession):
    → Claude 刚完成一轮处理后，只投递下一条可达消息
    → 如果仍有 pending，等待下一次 Stop/SessionEnd hook
 
-3. getPending(sid):
+4. getPending(sid):
    如果当前 session 仍有 pending，发送提醒卡片说明还有消息等待后续 hook 投递。
 ```
 
@@ -956,10 +983,13 @@ T+1s   feishu_bot 轮询到消息
        sendViaITerm("ttys002", "运行测试")
          → AppleScript 找到 ttys002 → write text "运行测试"
          → 返回 "ok"
-       replyCard("✅ 已发送", "消息已自动发送到 Claude Code 终端。")
+       recordDelivery(sid, msgId)  ← 记录映射: session → 飞书消息 ID
+       replyCard("✅ 已投递", ...)   ← 回复原始消息
 T+1.5s iTerm2 终端出现 "运行测试"，Claude Code 开始处理
 T+N s  Claude Code 处理完毕 → Stop hook 触发
-       notify.ts → sendChatCard(" 任务完成", "💬 模型输出: ...")
+       notify.ts → getLastDelivery(sid) → 查到 msgId
+       notify.ts → replyCard(msgId, "✅ Claude 已响应", ...)  ← 引用回复，形成线程
+       clearDelivery(sid)  ← 清除映射
 ```
 
 ### 场景 B: 引用卡片精确路由到指定 session
@@ -1141,9 +1171,15 @@ src/
 │                      #  - listActive: 活跃 session 列表 (含进程存活检测)
 │                      #  - isProcessAlive: process.kill(pid, 0)
 │                      #  - 自动清理 24h+ 无心跳记录
+├── delivery_tracker.ts # 投递追踪
+│                      #  - recordDelivery: 记录 session → 飞书消息 ID
+│                      #  - getLastDelivery: 查询最近投递的飞书消息 ID
+│                      #  - clearDelivery: 回复后清除记录
+│                      #  - 存储: delivery_tracker.json
 ├── terminal.ts        # 终端交互 (macOS + iTerm2)
 │                      #  - detectState: 读 transcript 判断 Claude 状态
 │                      #  - sendViaITerm: AppleScript 发送文本
+│                      #    / 开头消息延迟拆分: / → 300ms → 剩余内容
 │                      #  - findMyClaudeProcess: 沿 PPID 链定位当前 hook 所属 Claude 进程
 │                      #  - findClaudeProcess: 全局 ps 查找 Claude Code 进程（回退）
 │                      #  - detectTTY: tty 命令获取当前终端名
@@ -1158,7 +1194,9 @@ src/
 │                      #  - describeToolInput: 工具参数人类可读摘要
 │                      #  - toolLabel: 工具名中文映射
 │                      #  - SessionStart: 注册 session + 单条队列投递
-│                      #  - Stop/StopFailure/SessionEnd: 标记空闲 + 单条队列投递
+│                      #  - Stop/StopFailure: 查 delivery_tracker → replyCard 引用
+│                      #    回复原始飞书消息, 无记录则 sendChatCard 新消息
+│                      #  - SessionEnd: 标记空闲 + 单条队列投递
 └── cli.ts             # 统一 CLI 入口
                        #  - daemon 模式: spawn 子进程 + stdio 重定向
                        #  - 守护进程管理: start/stop/restart/status
