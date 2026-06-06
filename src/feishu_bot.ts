@@ -74,7 +74,7 @@ async function processNewMessages(): Promise<string[]> {
       chatId = msg.chat_id,
       sender = msg.sender?.id ?? "unknown";
     const text = extractText(msg);
-    if (!text || text.length < 2) continue;
+    if (!text) continue;
     log(`📨 [${sender}] ${text.slice(0, 80)}`);
 
     // ---- 诊断：保存原始消息（引用/回复消息时） ----
