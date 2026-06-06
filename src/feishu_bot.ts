@@ -4,15 +4,12 @@ import { resolve } from "node:path";
 import { config, PID_FILE, CHECKPOINT_FILE, DATA_DIR } from "./config.js";
 import { log } from "./logger.js";
 import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, lookupCardSession } from "./feishu_api.js";
-import { enqueueCommand, pendingCount } from "./inbox.js";
+import { enqueue, pendingCount } from "./message_queue.js";
+import type { QueuedMessage } from "./message_queue.js";
 import { detectState, sendViaITerm } from "./terminal.js";
 import { getSession, findByPrefix, listActive, isProcessAlive } from "./session_state.js";
-import { enqueue as enqueueSession, getPending as getSessionPending, markDelivered } from "./session_queue.js";
-import type { QueuedMessage } from "./session_queue.js";
-import { deliverMessagesSequentially } from "./session_delivery.js";
 
 let running = true;
-const activeDeliveries = new Set<string>();
 
 function loadCkpt(): string {
   if (!existsSync(CHECKPOINT_FILE)) return "";
@@ -136,8 +133,11 @@ async function processNewMessages(): Promise<string[]> {
 
     if (routed) continue;
 
-    // 通用 inbox
-    enqueueCommand(id, chatId, sender, text, msg.create_time);
+    // 通用 inbox（无 session 绑定）
+    enqueue({
+      id, chat_id: chatId, sender, content: text.trim(),
+      received_at: msg.create_time, status: "pending",
+    });
     const fallbackReply = buildInboxFallbackReply(text);
     await replyCard(id, fallbackReply.title, fallbackReply.content, fallbackReply.color);
   }
@@ -164,13 +164,13 @@ async function handleSessionMessage(msgId: string, chatId: string, sender: strin
   const session = getSession(sid) ?? findByPrefix(sid);
   if (!session) {
     log(`  Session 未注册，入队等待`);
-    enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
+    enqueue(makeSessionMsg(msgId, chatId, sender, text, sid));
     await replyCard(msgId, "📨 已入队", `目标会话未运行，指令已保存。\n\n会话恢复后自动投递。`, "yellow", sid);
     return;
   }
 
   if (!session.transcript_path) {
-    enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
+    enqueue(makeSessionMsg(msgId, chatId, sender, text, sid));
     await replyCard(msgId, "📨 已入队", `会话状态未知，指令已保存。\n\n确认终端可用后自动投递。`, "yellow", sid);
     return;
   }
@@ -192,52 +192,24 @@ async function handleSessionMessage(msgId: string, chatId: string, sender: strin
         await replyCard(msgId, "✅ 已投递", `指令已发送到终端处理。\n\n> ${text.slice(0, 200)}`, "green", sid);
         log(`  ✅ 已发送`);
       } else {
-        enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
+        enqueue(makeSessionMsg(msgId, chatId, sender, text, sid));
         await replyCard(msgId, "⚠️ 投递失败", "无法写入终端，指令已保存。\n\n请确认终端软件正在运行。", "yellow", sid);
       }
       break;
     }
     case "busy": {
-      enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
+      enqueue(makeSessionMsg(msgId, chatId, sender, text, sid));
       await replyCard(msgId, "⏳ 处理中，已排队", `当前任务执行中，指令已保存。\n\n任务完成后自动投递。`, "yellow", sid);
       log(`  入队等待 (busy → waiting 时自动发送)`);
-
-      scheduleSessionDelivery(sid, session.tty, session.transcript_path, session.pid);
       break;
     }
     case "gone": {
-      enqueueSession(makeSessionMsg(msgId, chatId, sender, text, sid));
+      enqueue(makeSessionMsg(msgId, chatId, sender, text, sid));
       await replyCard(msgId, "📨 已入队", `会话已退出，指令已保存。\n\n下次启动后自动投递。`, "yellow", sid);
       log(`  进程已退出，入队`);
       break;
     }
   }
-}
-
-function scheduleSessionDelivery(sid: string, tty: string, transcriptPath: string, pid: number): void {
-  if (activeDeliveries.has(sid)) return;
-  activeDeliveries.add(sid);
-  void drainSessionDelivery(sid, tty, transcriptPath, pid).finally(() => activeDeliveries.delete(sid));
-}
-
-async function drainSessionDelivery(sid: string, tty: string, transcriptPath: string, pid: number): Promise<void> {
-  const pending = getSessionPending(sid);
-  if (!pending.length) return;
-
-  const result = await deliverMessagesSequentially(pending, {
-    getState: () => {
-      const state = detectState(transcriptPath);
-      return state === "gone" && isProcessAlive(pid) ? "waiting" : state;
-    },
-    send: (message) => sendViaITerm(tty, message),
-    markDelivered,
-    onDelivered: async (item) => {
-      await replyCard(item.id, "✅ 已投递", `等待的指令已自动发送到终端。\n\n> ${item.content.slice(0, 200)}`, "green", sid);
-    },
-    sleep,
-  });
-
-  log(`📬 [${sid.slice(0, 16)}] 队列投递: sent=${result.sent} remaining=${result.remaining} reason=${result.reason}`);
 }
 
 function makeSessionMsg(id: string, chatId: string, sender: string, content: string, sessionId: string): QueuedMessage {

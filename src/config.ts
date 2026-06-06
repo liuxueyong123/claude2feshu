@@ -42,7 +42,6 @@ export const config = {
 // ---- 数据路径（运行时数据集中到 ~/.claude/feishu/ 下） ----
 
 export const DATA_DIR = resolve(HOME, ".claude", "feishu");
-export const INBOX_FILE = resolve(DATA_DIR, "feishu_inbox.jsonl");
 export const CHECKPOINT_FILE = resolve(DATA_DIR, "feishu_checkpoint.json");
 export const PID_FILE = resolve(DATA_DIR, "feishu_bot.pid");
 export const LOG_FILE = resolve(DATA_DIR, "feishu_bot.log");

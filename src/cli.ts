@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 /** 飞书 Bot 统一 CLI — 守护进程 + inbox + 通知 */
 import { pollLoop, runOnce, writePid, removePid, isRunning } from "./feishu_bot.js";
-import { getPending, popNext, pendingCount, clearDone, markDone } from "./inbox.js";
+import { getInboxPending, getPending, pendingCount, clearDelivered, markDelivered } from "./message_queue.js";
 import { replyCard, sendChatCard, listReceivedMessages } from "./feishu_api.js";
 import { existsSync, readFileSync, openSync, mkdirSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { PID_FILE, CHECKPOINT_FILE, LOG_FILE } from "./config.js";
 import { log } from "./logger.js";
 import { listActive, getSession } from "./session_state.js";
-import { getPending as getSessionPending, listPendingSessions } from "./session_queue.js";
+import { listPendingSessions } from "./message_queue.js";
 import { detectState, sendViaITerm } from "./terminal.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -70,16 +70,16 @@ async function main(): Promise<void> {
       break;
     case "once": await runOnce(); break;
     case "inbox": {
-      const p = getPending();
+      const p = getInboxPending();
       console.log(p.length ? p.map(c => `[${c.sender}] ${c.content} (${c.id})`).join("\n") : "📭 收件箱为空");
       break;
     }
-    case "pop": { const c = popNext(); console.log(c ? `[${c.sender}] ${c.content}\n(ID: ${c.id})` : "📭 收件箱为空"); break; }
-    case "done": a3 ? (markDone(a3), console.log(`✅ ${a3}`)) : console.error("用法: done <id>"); break;
+    case "pop": { const pending = getInboxPending(); const c = pending[0] ?? null; console.log(c ? `[${c.sender}] ${c.content}\n(ID: ${c.id})` : "📭 收件箱为空"); break; }
+    case "done": a3 ? (markDelivered(a3), console.log(`✅ ${a3}`)) : console.error("用法: done <id>"); break;
     case "reply":
-      if (a3 && a4) { const escaped = a4.replace(/```/g, '``​`'); const ok = await replyCard(a3, "✅ 结果", `\`\`\`\n${escaped}\n\`\`\`\n\n— Claude Code`, "green"); ok ? (markDone(a3), console.log("✅")) : console.error("❌"); }
+      if (a3 && a4) { const escaped = a4.replace(/```/g, '``​`'); const ok = await replyCard(a3, "✅ 结果", `\`\`\`\n${escaped}\n\`\`\`\n\n— Claude Code`, "green"); ok ? (markDelivered(a3), console.log("✅")) : console.error("❌"); }
       else console.error("用法: reply <id> <text>"); break;
-    case "clear": console.log(`🧹 ${clearDone()} 条`); break;
+    case "clear": console.log(`🧹 ${clearDelivered()} 条`); break;
     case "test-webhook": console.log(await sendChatCard("🧪 测试", "webhook 正常 ✅") ? "✅ OK" : "❌ FAIL"); break;
     case "test-api": {
       const msgs = await listReceivedMessages(5, false);
@@ -115,7 +115,7 @@ async function main(): Promise<void> {
       break;
     }
     case "session-queue": {
-      const sq = a3 ? getSessionPending(a3) : [];
+      const sq = a3 ? getPending(a3) : [];
       if (sq.length) {
         sq.forEach(m => console.log(`[${m.sender}] ${m.content}\n  ── received: ${m.received_at.slice(0, 19)} status: ${m.status}`));
       } else {
