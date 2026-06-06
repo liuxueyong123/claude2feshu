@@ -1,0 +1,27 @@
+{
+  "name": "claude2feishu",
+  "version": "2.0.0",
+  "description": "Claude Code ↔ 飞书双向通信",
+  "type": "module",
+  "scripts": {
+    "start":        "npx tsx src/cli.ts start",
+    "stop":         "npx tsx src/cli.ts stop",
+    "restart":      "npx tsx src/cli.ts restart",
+    "status":       "npx tsx src/cli.ts status",
+    "once":         "npx tsx src/cli.ts once",
+    "inbox":        "npx tsx src/cli.ts inbox",
+    "pop":          "npx tsx src/cli.ts pop",
+    "done":         "npx tsx src/cli.ts done",
+    "reply":        "npx tsx src/cli.ts reply",
+    "clear":        "npx tsx src/cli.ts clear",
+    "test-webhook": "npx tsx src/cli.ts test-webhook",
+    "test-api":     "npx tsx src/cli.ts test-api",
+    "build":        "npx tsc",
+    "typecheck":    "npx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}

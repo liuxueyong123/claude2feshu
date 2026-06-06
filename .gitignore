@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+*.log
+feishu_inbox.jsonl
+feishu_checkpoint.json
+feishu_bot.pid
