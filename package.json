@@ -21,6 +21,7 @@
     "session-state": "npx tsx src/cli.ts session-state",
     "session-queue": "npx tsx src/cli.ts session-queue",
     "session-send":  "npx tsx src/cli.ts session-send",
+    "setup-hooks":   "npx tsx src/setup-hooks.ts",
     "build":         "npx tsc",
     "typecheck":     "npx tsc --noEmit"
   },

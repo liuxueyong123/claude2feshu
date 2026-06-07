@@ -71,23 +71,11 @@ FEISHU_LOG_LEVEL=INFO               # 日志级别配置项
 
 ### 3. 配置 Claude Code Hooks
 
-在 `~/.claude/settings.json` 中:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 已启动' --type info" }],
-    "Stop": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 任务完成' --type success" }],
-    "StopFailure": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 异常终止' --type error" }],
-    "PermissionRequest": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 等待确认' --type warning" }],
-    "PermissionDenied": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 权限拒绝' --type error" }],
-    "Elicitation": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 等待输入' --type warning" }],
-    "PostToolUseFailure": [{ "command": "cd /path/to/claude2feishu && ./notify.sh --title ' 操作失败' --type error" }]
-  }
-}
+```bash
+pnpm setup-hooks
 ```
 
-如果项目路径不是 `/Users/lxy/Documents/claude2feishu`，需要同步修改 `notify.sh` 里的 `cd` 路径，或直接在 hook command 中调用正确路径下的 `npx tsx src/notify.ts`。
+自动将通知 hooks 写入 `~/.claude/settings.json`，与已有配置合并。执行 `pnpm setup-hooks --dry-run` 可预览不写入。
 
 ### 4. 启动
 
