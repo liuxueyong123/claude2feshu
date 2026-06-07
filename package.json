@@ -21,9 +21,13 @@
     "session-state": "npx tsx src/cli.ts session-state",
     "session-queue": "npx tsx src/cli.ts session-queue",
     "session-send":  "npx tsx src/cli.ts session-send",
-    "setup-hooks":   "npx tsx src/setup-hooks.ts",
-    "build":         "npx tsc",
-    "typecheck":     "npx tsc --noEmit"
+    "setup-hooks":    "npx tsx src/setup-hooks.ts",
+    "service-start":  "nohup npx tsx src/notifyd.ts > ~/.claude/feishu/notifyd.log 2>&1 & sleep 1 && curl -s http://127.0.0.1:${FEISHU_NOTIFYD_PORT:-9876}/health | python3 -m json.tool 2>/dev/null || echo '(check service-status)'",
+    "service-stop":   "kill $(cat ~/.claude/feishu/notifyd.pid 2>/dev/null) 2>/dev/null && echo '✅ notifyd stopped' || echo '⚠️  notifyd not running'",
+    "service-status": "curl -s http://127.0.0.1:${FEISHU_NOTIFYD_PORT:-9876}/health 2>/dev/null | python3 -m json.tool || echo '❌ notifyd not running'",
+    "service-logs":   "tail -f ~/.claude/feishu/notifyd.log",
+    "build":          "npx tsc",
+    "typecheck":      "npx tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^25.9.2",

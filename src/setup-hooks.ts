@@ -17,7 +17,8 @@ import * as os from "node:os";
 // ── 常量 ────────────────────────────────────────────────────────
 
 const PROJECT_DIR = process.cwd();
-const NOTIFY_SCRIPT = path.join(PROJECT_DIR, "notify.sh");
+const NOTIFYD_PORT = parseInt(process.env.FEISHU_NOTIFYD_PORT ?? "9876", 10);
+const NOTIFYD_URL = `http://127.0.0.1:${NOTIFYD_PORT}`;
 const SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json");
 
 interface HookDef {
@@ -72,25 +73,21 @@ function writeJson(filePath: string, data: unknown): void {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf-8");
 }
 
-/** 检测 hook entry 是否属于 claude2feishu，支持三种格式：
- *  简单格式: { command: "...notify.sh..." }
- *  嵌套格式: { hooks: [{ command: "...notify.sh..." }] }
- *  matcher 格式: { matcher: "...", hooks: [{ command: "...notify.sh..." }] }
- */
+/** 检测 hook entry 是否属于 claude2feishu */
 function isFeishuHook(entry: unknown): boolean {
   if (typeof entry !== "object" || entry === null) return false;
   const obj = entry as Record<string, unknown>;
 
   // 简单格式: { command: "..." }
   const cmd = typeof obj.command === "string" ? obj.command : "";
-  if (cmd.includes("claude2feishu") || cmd.includes("notify.sh")) return true;
+  if (cmd.includes("claude2feishu") || cmd.includes("notify.sh") || cmd.includes(NOTIFYD_URL)) return true;
 
-  // 嵌套格式: { hooks: [{ command: "..." }] } 或 { matcher: "...", hooks: [...] }
-  const hooks = Array.isArray(obj.hooks) ? obj.hooks : [];
-  for (const h of hooks) {
+  // 嵌套格式: { hooks: [{ command: "..." }] }
+  const subHooks = Array.isArray(obj.hooks) ? obj.hooks : [];
+  for (const h of subHooks) {
     if (typeof h === "object" && h !== null) {
       const innerCmd = typeof (h as Record<string, unknown>).command === "string" ? ((h as Record<string, unknown>).command as string) : "";
-      if (innerCmd.includes("claude2feishu") || innerCmd.includes("notify.sh")) return true;
+      if (innerCmd.includes("claude2feishu") || innerCmd.includes("notify.sh") || innerCmd.includes(NOTIFYD_URL)) return true;
     }
   }
 
@@ -115,6 +112,11 @@ interface HookEntry {
   hooks: Array<{ type: "command"; command: string }>;
 }
 
+function buildCurlCmd(title: string, type: string): string {
+  const params = new URLSearchParams({ title, type });
+  return `curl -s -X POST "${NOTIFYD_URL}/hook?${params.toString()}" --data-binary @- -H 'Content-Type: application/json'`;
+}
+
 function generateHooks(): Record<string, HookEntry[]> {
   const hooks: Record<string, HookEntry[]> = {};
 
@@ -125,7 +127,7 @@ function generateHooks(): Record<string, HookEntry[]> {
         hooks: [
           {
             type: "command",
-            command: `${NOTIFY_SCRIPT} --title '${h.title}' --type ${h.type}`,
+            command: buildCurlCmd(h.title, h.type),
           },
         ],
       },
@@ -136,11 +138,6 @@ function generateHooks(): Record<string, HookEntry[]> {
 }
 
 function setup(opts: { dryRun: boolean; force: boolean }): SetupResult[] {
-  if (!fs.existsSync(NOTIFY_SCRIPT)) {
-    console.error(`❌ 未找到 notify.sh，期望路径: ${NOTIFY_SCRIPT}`);
-    process.exit(1);
-  }
-
   const existing = readJson<SettingsFile>(SETTINGS_PATH, {});
   const mergedHooks: Record<string, unknown[]> = { ...(existing.hooks ?? {}) };
   const newHooks = generateHooks();
@@ -186,8 +183,7 @@ function main(): void {
   const force = args.includes("--force");
 
   console.log(`\n🔧 claude2feishu Hook 配置工具`);
-  console.log(`   项目路径: ${PROJECT_DIR}`);
-  console.log(`   通知脚本: ${NOTIFY_SCRIPT}`);
+  console.log(`   通知服务: ${NOTIFYD_URL}`);
   console.log(`   配置文件: ${SETTINGS_PATH}`);
 
   if (dryRun) console.log(`   模式:     预览（不写入）`);

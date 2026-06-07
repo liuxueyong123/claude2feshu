@@ -18,7 +18,7 @@ import { deliverNextPending } from "./delivery_orchestrator.js";
 // 类型
 // ============================================================
 
-interface HookEvent {
+export interface HookEvent {
   hook_event_name?: string;
   session_id?: string;
   transcript_path?: string;
@@ -429,39 +429,35 @@ async function deliverNextInBackground(pid: number, tty: string, sid: string, tr
 }
 
 // ============================================================
-// CLI 入口
+// 核心事件处理（CLI 和 notifyd 共用）
 // ============================================================
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const g = (f: string) => {
-    const i = args.indexOf(f);
-    return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
-  };
-  const h = (f: string) => args.includes(f);
+export interface ProcessHookEventOpts {
+  includeBashErrors?: boolean;
+}
 
-  // 非通知模式
-  if (h("--check-inbox")) {
-    console.log(checkInboxText());
+/**
+ * 处理 hook 事件：过滤 → 构建上下文 → 发通知 → Session 生命周期管理。
+ * 被 CLI (notify.ts) 和 HTTP 服务 (notifyd.ts) 共用。
+ */
+export async function processHookEvent(
+  event: HookEvent,
+  title: string,
+  message: string,
+  type: string,
+  opts: ProcessHookEventOpts = {},
+): Promise<void> {
+  // ---- 通知过滤 ----
+  // Bash 工具执行失败通常是 Claude 探索性操作（如 ls 路径不存在、git 无变更），
+  // Claude 会自行消化错误并重试，无需推送通知打断用户。
+  if (
+    event.hook_event_name === "PostToolUseFailure" &&
+    event.tool_name === "Bash" &&
+    !opts.includeBashErrors
+  ) {
+    log(`Bash 错误已过滤: ${(event.error ?? "").slice(0, 120)}`, "DEBUG");
     return;
   }
-  if (h("--pop")) {
-    console.log(popInboxCommand());
-    return;
-  }
-  const replyId = g("--reply-to");
-  if (replyId) {
-    const msg = g("--message") ?? "";
-    console.log((await replyToMessage(replyId, msg)) ? `✅ 已回复 ${replyId}` : `❌ 回复失败`);
-    markDelivered(replyId);
-    return;
-  }
-
-  // ---- 通知模式 ----
-  const title = g("--title") ?? "Claude Code";
-  const message = g("--message") ?? "";
-  const type = g("--type") ?? "info";
-  const event = readHookStdin();
 
   // 拼接上下文：先给 ctx 留出空间，剩余字节全给 message
   const ctx = buildContext(event);
@@ -490,8 +486,6 @@ async function main(): Promise<void> {
   // ---- Session 生命周期管理 ----
 
   if (event.hook_event_name === "SessionStart" && sid) {
-    // 注册 session：沿进程树向上查找触发本 hook 的 Claude Code 进程
-    // 使用 findMyClaudeProcess() 而非 findClaudeProcess()，确保多窗口时各自定位到正确的进程
     const proc = findMyClaudeProcess();
     if (proc) {
       registerSession({
@@ -506,7 +500,6 @@ async function main(): Promise<void> {
       log(`Session 注册: ${sid.slice(0, 16)}... pid=${proc.pid} tty=${proc.tty}`, "DEBUG");
     }
 
-    // 检查通用 inbox
     const p = getInboxPending();
     if (p.length) {
       await sendNotification(
@@ -521,13 +514,11 @@ async function main(): Promise<void> {
       );
     }
 
-    // 后台投递所有 pending 消息（fire-and-forget，不阻塞 SessionStart）
     if (proc) {
       void deliverNextInBackground(proc.pid, proc.tty, sid, event.transcript_path ?? "");
     }
   }
 
-  // Stop / StopFailure / SessionEnd: 标记空闲，并触发下一条队列投递
   if (sid && (event.hook_event_name === "Stop" || event.hook_event_name === "StopFailure" || event.hook_event_name === "SessionEnd")) {
     markIdle(sid);
     const session = getSession(sid);
@@ -549,6 +540,46 @@ async function main(): Promise<void> {
       );
     }
   }
+}
+
+// ============================================================
+// CLI 入口
+// ============================================================
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  const g = (f: string) => {
+    const i = args.indexOf(f);
+    return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+  };
+  const h = (f: string) => args.includes(f);
+
+  // 非通知模式
+  if (h("--check-inbox")) {
+    console.log(checkInboxText());
+    return;
+  }
+  if (h("--pop")) {
+    console.log(popInboxCommand());
+    return;
+  }
+  const replyId = g("--reply-to");
+  if (replyId) {
+    const msg = g("--message") ?? "";
+    console.log((await replyToMessage(replyId, msg)) ? `✅ 已回复 ${replyId}` : `❌ 回复失败`);
+    markDelivered(replyId);
+    return;
+  }
+
+  // 通知模式：委托给 processHookEvent
+  const title = g("--title") ?? "Claude Code";
+  const message = g("--message") ?? "";
+  const type = g("--type") ?? "info";
+  const event = readHookStdin();
+
+  await processHookEvent(event, title, message, type, {
+    includeBashErrors: h("--include-bash-errors"),
+  });
 }
 
 // 仅在明确以 CLI 方式调用时执行 main()，防止模块被 import 时产生副作用（发送飞书消息）
