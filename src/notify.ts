@@ -1,9 +1,10 @@
 /**
  * Claude Code → 飞书通知
- * 解析 hook stdin JSON，提取丰富上下文，推送卡片到飞书群。
+ * 构建 hook 事件上下文，推送卡片到飞书群。
+ * 核心逻辑被 notifyd HTTP 服务调用。
  */
 import { sendChatCard, replyCard } from "./feishu_api.js";
-import { getInboxPending, getPending as getPendingMessages, markDelivered } from "./message_queue.js";
+import { getInboxPending, getPending as getPendingMessages } from "./message_queue.js";
 import { registerSession, markIdle, isProcessAlive, getSession } from "./session_state.js";
 import { findMyClaudeProcess, sendToTerminal } from "./terminal.js";
 import { getLastDelivery, clearDelivery } from "./delivery_tracker.js";
@@ -32,20 +33,6 @@ export interface HookEvent {
   message?: string;
   response?: string;
   [key: string]: unknown;
-}
-
-// ============================================================
-// stdin 读取
-// ============================================================
-
-function readHookStdin(): HookEvent {
-  if (process.stdin.isTTY) return {};
-  try {
-    const raw = readFileSync(process.stdin.fd, "utf-8");
-    return raw.trim() ? (JSON.parse(raw) as HookEvent) : {};
-  } catch {
-    return {};
-  }
 }
 
 // ============================================================
@@ -438,7 +425,6 @@ export interface ProcessHookEventOpts {
 
 /**
  * 处理 hook 事件：过滤 → 构建上下文 → 发通知 → Session 生命周期管理。
- * 被 CLI (notify.ts) 和 HTTP 服务 (notifyd.ts) 共用。
  */
 export async function processHookEvent(
   event: HookEvent,
@@ -540,54 +526,4 @@ export async function processHookEvent(
       );
     }
   }
-}
-
-// ============================================================
-// CLI 入口
-// ============================================================
-
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const g = (f: string) => {
-    const i = args.indexOf(f);
-    return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
-  };
-  const h = (f: string) => args.includes(f);
-
-  // 非通知模式
-  if (h("--check-inbox")) {
-    console.log(checkInboxText());
-    return;
-  }
-  if (h("--pop")) {
-    console.log(popInboxCommand());
-    return;
-  }
-  const replyId = g("--reply-to");
-  if (replyId) {
-    const msg = g("--message") ?? "";
-    console.log((await replyToMessage(replyId, msg)) ? `✅ 已回复 ${replyId}` : `❌ 回复失败`);
-    markDelivered(replyId);
-    return;
-  }
-
-  // 通知模式：委托给 processHookEvent
-  const title = g("--title") ?? "Claude Code";
-  const message = g("--message") ?? "";
-  const type = g("--type") ?? "info";
-  const event = readHookStdin();
-
-  await processHookEvent(event, title, message, type, {
-    includeBashErrors: h("--include-bash-errors"),
-  });
-}
-
-// 仅在明确以 CLI 方式调用时执行 main()，防止模块被 import 时产生副作用（发送飞书消息）
-const CLI_FLAGS = ["--check-inbox", "--pop", "--reply-to", "--title"];
-const invokedAsCli = CLI_FLAGS.some((f) => process.argv.includes(f));
-if (invokedAsCli) {
-  main().catch((e) => {
-    log(`notify 异常: ${e}`, "ERROR");
-    process.exit(1);
-  });
 }
