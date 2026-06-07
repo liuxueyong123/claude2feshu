@@ -76,7 +76,7 @@ function buildContext(event: HookEvent): string {
   // 会话 ID
   const sid = event.session_id ?? "";
   if (sid) {
-    lines.push(`🔗 **会话 ID：** \`${sid}\``);
+    lines.push(`🔗 **会话：** \`${sid}\``);
   }
 
   // ============================================================
@@ -92,34 +92,34 @@ function buildContext(event: HookEvent): string {
       // 会话正常结束时展示最终输出，方便了解完成状态
       const output = getModelOutput(event);
       if (output) {
-        lines.push(`\n💬 **模型输出：**\n${wrapInCodeBlock(output)}`);
+        lines.push(`\n💬 **输出：**\n${wrapInCodeBlock(output)}`);
       }
       break;
     }
 
     case "StopFailure": {
       const err = event.error ?? "";
-      if (err) lines.push(`\n💥 **错误原因**\n\`\`\`\n${clip(err, 500)}\n\`\`\``);
+      if (err) lines.push(`\n💥 **错误**\n\`\`\`\n${clip(err, 500)}\n\`\`\``);
       break;
     }
 
     case "PermissionRequest": {
       const tool = event.tool_name ?? "未知";
       const input = event.tool_input ?? {};
-      lines.push(`\n🛠 **请求操作：** ${toolLabel(tool)}`);
+      lines.push(`\n🛠 **请求：** ${toolLabel(tool)}`);
       const desc = describeToolInput(tool, input);
       if (desc) lines.push(`\`\`\`\n${clip(desc, 300)}\n\`\`\``);
       // 展示模型输出，帮助理解 Claude 为什么请求此操作
       const output = getModelOutput(event);
       if (output) {
-        lines.push(`💬 **模型输出：**\n${wrapInCodeBlock(output)}`);
+        lines.push(`💬 **输出：**\n${wrapInCodeBlock(output)}`);
       }
       break;
     }
 
     case "PermissionDenied": {
       const tool = event.tool_name ?? "未知";
-      lines.push(`\n🚫 **被拒绝：** ${toolLabel(tool)}`);
+      lines.push(`\n🚫 **已拒绝：** ${toolLabel(tool)}`);
       const input = event.tool_input ?? {};
       const desc = describeToolInput(tool, input);
       if (desc) lines.push(`\`\`\`\n${clip(desc, 200)}\n\`\`\``);
@@ -128,7 +128,7 @@ function buildContext(event: HookEvent): string {
 
     case "Elicitation": {
       const q = event.question ?? "";
-      if (q) lines.push(`\n❓ **Claude 的提问**\n\`\`\`\n${clip(q, 400)}\n\`\`\``);
+      if (q) lines.push(`\n❓ **提问：**\n\`\`\`\n${clip(q, 400)}\n\`\`\``);
       break;
     }
 
@@ -136,10 +136,10 @@ function buildContext(event: HookEvent): string {
       const tool = event.tool_name ?? "未知";
       const input = event.tool_input ?? {};
       const err = event.error ?? "";
-      lines.push(`\n🔧 **失败操作：** ${toolLabel(tool)}`);
+      lines.push(`\n🔧 **失败：** ${toolLabel(tool)}`);
       const desc = describeToolInput(tool, input);
       if (desc) lines.push(`\`\`\`\n${clip(desc, 300)}\n\`\`\``);
-      if (err) lines.push(`💥 **错误信息**\n\`\`\`\n${clip(err, 500)}\n\`\`\``);
+      if (err) lines.push(`💥 **错误**\n\`\`\`\n${clip(err, 500)}\n\`\`\``);
       break;
     }
   }
@@ -157,8 +157,8 @@ function toolLabel(tool: string): string {
     WebSearch: "搜索网页",
     Grep: "搜索代码",
     Glob: "查找文件",
-    Task: "创建任务",
-    Agent: "启动子 Agent",
+    Task: "后台任务",
+    Agent: "子智能体",
     AskUserQuestion: "向用户提问",
   };
   return map[tool] ?? tool;
@@ -291,7 +291,10 @@ function getModelOutput(event: HookEvent): string {
   // 3) 兜底：event 自带的输出字段
   const out = event.output ?? event.message ?? event.response ?? "";
   if (typeof out === "string" && out.trim()) {
-    const cleaned = out.split("\n").filter((l) => l.trim()).join("\n");
+    const cleaned = out
+      .split("\n")
+      .filter((l) => l.trim())
+      .join("\n");
     return clipBytes(cleaned, 5000);
   }
   return "";
@@ -389,7 +392,7 @@ export function checkInboxText(): string {
 export function popInboxCommand(): string {
   const pending = getInboxPending();
   const cmd = pending[0] ?? null;
-  return cmd ? `[Feishu指令] 来自 ${cmd.sender}: ${cmd.content}\n(ID: ${cmd.id})` : "📭 无待处理指令";
+  return cmd ? `[飞书指令] 来自 ${cmd.sender}: ${cmd.content}\n(ID: ${cmd.id})` : "📭 无待处理指令";
 }
 
 // ============================================================
@@ -409,8 +412,8 @@ async function deliverNextInBackground(pid: number, tty: string, sid: string, tr
   const pendingTotal = result.failed + result.remaining;
   if (result.sent > 0 || pendingTotal > 0) {
     await sendNotification(
-      `📥 消息投递：${result.sent} 条成功`,
-      result.details.slice(-10).join("\n") + (pendingTotal > 0 ? `\n\n⚠️ ${pendingTotal} 条保留在队列中，等待下次 hook 投递` : ""),
+      `📥 已投递 ${result.sent} 条消息`,
+      result.details.slice(-10).join("\n") + (pendingTotal > 0 ? `\n\n⚠️ ${pendingTotal} 条保留在队列，等待下次投递` : ""),
       pendingTotal === 0 ? "success" : "warning",
       sid,
     );
@@ -449,9 +452,9 @@ export async function processHookEvent(event: HookEvent, title: string, message:
 
   const sid = event.session_id ?? "";
 
-  // Stop/StopFailure/SessionEnd: 尝试引用回复原始飞书消息，形成对话线程
+  // Stop/StopFailure: 尝试引用回复原始飞书消息，形成对话线程
   let notificationSent = false;
-  if (sid && (event.hook_event_name === "Stop" || event.hook_event_name === "StopFailure" || event.hook_event_name === "SessionEnd")) {
+  if (sid && (event.hook_event_name === "Stop" || event.hook_event_name === "StopFailure")) {
     const replyMsgId = getLastDelivery(sid);
     if (replyMsgId) {
       const ok = await replyCard(replyMsgId, title, fullMessage, COLORS[type] ?? "blue", sid);
@@ -494,12 +497,11 @@ export async function processHookEvent(event: HookEvent, title: string, message:
     const p = getInboxPending();
     if (p.length) {
       await sendNotification(
-        "📥 收件箱待处理",
-        `共 ${p.length} 条指令：\n` +
-          p
-            .slice(-3)
-            .map((c) => `- [${c.sender}]: ${c.content.slice(0, 100)}`)
-            .join("\n"),
+        `📥 收件箱有 ${p.length} 条待处理指令`,
+        p
+          .slice(-3)
+          .map((c) => `- [${c.sender}]: ${c.content.slice(0, 100)}`)
+          .join("\n"),
         "warning",
         sid,
       );
@@ -519,12 +521,11 @@ export async function processHookEvent(event: HookEvent, title: string, message:
     const sq = getPendingMessages(sid);
     if (sq.length) {
       await sendNotification(
-        "📬 会话结束，待处理消息",
-        `${sq.length} 条指令等待处理：\n` +
-          sq
-            .slice(-3)
-            .map((m) => `- [${m.sender}]: ${m.content.slice(0, 100)}`)
-            .join("\n") +
+        `📬 ${sq.length} 条消息待处理`,
+        sq
+          .slice(-3)
+          .map((m) => `- [${m.sender}]: ${m.content.slice(0, 100)}`)
+          .join("\n") +
           `\n\n终端空闲时自动投递。`,
         "warning",
         sid,

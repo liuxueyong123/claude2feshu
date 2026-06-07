@@ -44,7 +44,7 @@ export async function deliverNextPending(deps: OrchestratorDeps): Promise<Orches
   if (state !== "waiting") return { sent: 0, failed: 0, remaining: messages.length, reason: state === "gone" ? "not_waiting" : "busy", details: [`⏳ ${messages.length} 条保留`] };
   const item = messages[0];
   if (!deps.sendToTerminal(deps.tty, item.content)) {
-    await deps.replyCard(item.id, "⚠️ 投递失败", "无法写入终端，指令已保留。\n\n请确认终端软件正在运行。", "yellow", deps.sessionId);
+    await deps.replyCard(item.id, "⚠️ 投递失败", "无法写入终端，指令已保留。\n\n请确认终端正在运行。", "yellow", deps.sessionId);
     return { sent: 0, failed: 1, remaining: messages.length, reason: "send_failed", details: ["❌ 1 条发送失败"] };
   }
   markDelivered(item.id);

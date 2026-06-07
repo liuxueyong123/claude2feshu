@@ -117,7 +117,7 @@ async function processNewMessages(): Promise<string[]> {
 export function buildInboxFallbackReply(text: string): { title: string; content: string; color: string } {
   return {
     title: "📨 已收到，等待投递",
-    content: `指令：${text.slice(0, 200)}\n\n` + "当前没有运行中的 Claude Code，指令已存入收件箱。\n" + "下次启动后自动处理。",
+    content: `> ${text.slice(0, 200)}\n\n暂无运行中的 Claude 会话，指令已存入收件箱，下次启动后自动处理。`,
     color: "yellow",
   };
 }
@@ -131,13 +131,13 @@ async function handleSessionMessage(msgId: string, chatId: string, sender: strin
   if (!session) {
     log(`  Session 未注册，入队等待`);
     enqueue(makeSessionMsg(msgId, chatId, sender, text, sid));
-    await replyCard(msgId, "📨 已入队", `目标会话未运行，指令已保存。\n\n会话恢复后自动投递。`, "yellow", sid);
+    await replyCard(msgId, "📨 已入队", `目标会话尚未启动，指令已保存，启动后自动投递。`, "yellow", sid);
     return;
   }
 
   if (!session.transcript_path) {
     enqueue(makeSessionMsg(msgId, chatId, sender, text, sid));
-    await replyCard(msgId, "📨 已入队", `会话状态未知，指令已保存。\n\n确认终端可用后自动投递。`, "yellow", sid);
+    await replyCard(msgId, "📨 已入队", `会话状态未知，指令已保存。\n\n确认终端可用后自动处理。`, "yellow", sid);
     return;
   }
 
@@ -160,19 +160,19 @@ async function handleSessionMessage(msgId: string, chatId: string, sender: strin
         log(`  ✅ 已发送`);
       } else {
         enqueue(makeSessionMsg(msgId, chatId, sender, text, sid));
-        await replyCard(msgId, "⚠️ 投递失败", "无法写入终端，指令已保存。\n\n请确认终端软件正在运行。", "yellow", sid);
+        await replyCard(msgId, "⚠️ 投递失败", "无法写入终端，指令已保留。\n\n请确认终端正在运行。", "yellow", sid);
       }
       break;
     }
     case "busy": {
       enqueue(makeSessionMsg(msgId, chatId, sender, text, sid));
-      await replyCard(msgId, "⏳ 处理中，已排队", `当前任务执行中，指令已保存。\n\n任务完成后自动投递。`, "yellow", sid);
+      await replyCard(msgId, "⏳ 处理中，已排队", `Claude 正在执行任务，指令已保存，任务完成后自动投递。`, "yellow", sid);
       log(`  入队等待 (busy → waiting 时自动发送)`);
       break;
     }
     case "gone": {
       enqueue(makeSessionMsg(msgId, chatId, sender, text, sid));
-      await replyCard(msgId, "📨 已入队", `会话已退出，指令已保存。\n\n下次启动后自动投递。`, "yellow", sid);
+      await replyCard(msgId, "📨 已入队", `会话已退出，指令已保存，下次启动后自动投递。`, "yellow", sid);
       log(`  进程已退出，入队`);
       break;
     }
@@ -198,7 +198,7 @@ async function checkDeadSessions(): Promise<void> {
     log(`检测到死 session: ${s.session_id.slice(0, 16)}... pid=${s.pid}`, "WARN");
     await notifyCard(
       "Claude 会话已终止",
-      `会话 ${s.session_id.slice(0, 8)}… 进程已退出。\n\n可能原因：终端窗口关闭或进程被终止。`,
+      `会话 ${s.session_id.slice(0, 8)}… 进程已退出。\n\n原因：终端窗口关闭或进程被终止。`,
       "warning",
       s.session_id,
     );

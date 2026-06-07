@@ -39,15 +39,16 @@ interface HookDef {
  * 如需接收 Bash 错误通知，手动将 matcher 改为 "" 即可。
  */
 const HOOKS: HookDef[] = [
-  { event: "SessionStart", title: "Claude 已启动", type: "info", matcher: "" },
-  { event: "Stop", title: "Claude 任务完成", type: "success", matcher: "" },
-  { event: "StopFailure", title: "Claude 异常终止", type: "error", matcher: "" },
-  { event: "PermissionRequest", title: "Claude 等待确认", type: "warning", matcher: "" },
-  { event: "PermissionDenied", title: "Claude 权限拒绝", type: "error", matcher: "" },
-  { event: "Elicitation", title: "Claude 等待输入", type: "warning", matcher: "" },
+  { event: "SessionStart", title: "🚀 Claude 已启动", type: "info", matcher: "" },
+  { event: "Stop", title: "✅ Claude 任务完成", type: "success", matcher: "" },
+  { event: "StopFailure", title: "❌ Claude 异常终止", type: "error", matcher: "" },
+  { event: "PermissionRequest", title: "🔐 Claude 请求授权", type: "warning", matcher: "" },
+  { event: "PermissionDenied", title: "🚫 Claude 授权被拒", type: "error", matcher: "" },
+  { event: "Elicitation", title: "💬 Claude 需要回复", type: "warning", matcher: "" },
+  { event: "SessionEnd", title: "🏁 Claude 会话结束", type: "info", matcher: "" },
   {
     event: "PostToolUseFailure",
-    title: "Claude 操作失败",
+    title: "⚠️ Claude 工具异常",
     type: "error",
     // 排除 Bash：Bash 失败通常是 Claude 探索性操作，会自行消化
     matcher: "Write|Edit|Read|WebFetch|WebSearch|Grep|Glob|Task|Agent|AskUserQuestion",

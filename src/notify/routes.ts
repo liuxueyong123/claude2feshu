@@ -44,7 +44,7 @@ router.post("/inbox/reply", async (ctx) => {
   const { msgId, text } = (ctx.request.body as Record<string, string>) ?? {};
   if (!msgId || !text) { ctx.status = 400; ctx.body = { error: "msgId and text required" }; return; }
   const escaped = text.replace(/```/g, "``​`");
-  const ok = await replyCard(msgId, "✅ 结果", `\`\`\`\n${escaped}\n\`\`\`\n\n— Claude Code`, "green");
+  const ok = await replyCard(msgId, "✅ 执行结果", `\`\`\`\n${escaped}\n\`\`\`\n\n— Claude Code`, "green");
   if (ok) markDelivered(msgId);
   ctx.body = { ok: !!ok };
 });
