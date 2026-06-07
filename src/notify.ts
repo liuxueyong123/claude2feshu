@@ -551,7 +551,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => {
-  log(`notify 异常: ${e}`, "ERROR");
-  process.exit(1);
-});
+// 仅在明确以 CLI 方式调用时执行 main()，防止模块被 import 时产生副作用（发送飞书消息）
+const CLI_FLAGS = ["--check-inbox", "--pop", "--reply-to", "--title"];
+const invokedAsCli = CLI_FLAGS.some((f) => process.argv.includes(f));
+if (invokedAsCli) {
+  main().catch((e) => {
+    log(`notify 异常: ${e}`, "ERROR");
+    process.exit(1);
+  });
+}
