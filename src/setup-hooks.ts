@@ -38,12 +38,12 @@ interface HookDef {
  * 如需接收 Bash 错误通知，手动将 matcher 改为 "" 即可。
  */
 const HOOKS: HookDef[] = [
-  { event: "SessionStart",        title: "Claude 已启动",    type: "info",    matcher: "" },
-  { event: "Stop",                title: "Claude 任务完成",   type: "success", matcher: "" },
-  { event: "StopFailure",         title: "Claude 异常终止",   type: "error",   matcher: "" },
-  { event: "PermissionRequest",   title: "Claude 等待确认",   type: "warning", matcher: "" },
-  { event: "PermissionDenied",    title: "Claude 权限拒绝",   type: "error",   matcher: "" },
-  { event: "Elicitation",         title: "Claude 等待输入",   type: "warning", matcher: "" },
+  { event: "SessionStart", title: "Claude 已启动", type: "info", matcher: "" },
+  { event: "Stop", title: "Claude 任务完成", type: "success", matcher: "" },
+  { event: "StopFailure", title: "Claude 异常终止", type: "error", matcher: "" },
+  { event: "PermissionRequest", title: "Claude 等待确认", type: "warning", matcher: "" },
+  { event: "PermissionDenied", title: "Claude 权限拒绝", type: "error", matcher: "" },
+  { event: "Elicitation", title: "Claude 等待输入", type: "warning", matcher: "" },
   {
     event: "PostToolUseFailure",
     title: "Claude 操作失败",
@@ -89,9 +89,7 @@ function isFeishuHook(entry: unknown): boolean {
   const hooks = Array.isArray(obj.hooks) ? obj.hooks : [];
   for (const h of hooks) {
     if (typeof h === "object" && h !== null) {
-      const innerCmd = typeof (h as Record<string, unknown>).command === "string"
-        ? (h as Record<string, unknown>).command as string
-        : "";
+      const innerCmd = typeof (h as Record<string, unknown>).command === "string" ? ((h as Record<string, unknown>).command as string) : "";
       if (innerCmd.includes("claude2feishu") || innerCmd.includes("notify.sh")) return true;
     }
   }
@@ -193,15 +191,15 @@ function main(): void {
   console.log(`   配置文件: ${SETTINGS_PATH}`);
 
   if (dryRun) console.log(`   模式:     预览（不写入）`);
-  if (force)  console.log(`   模式:     强制覆盖`);
+  if (force) console.log(`   模式:     强制覆盖`);
 
   const results = setup({ dryRun, force });
 
   console.log(`\n${dryRun ? "📝 预览" : "✅ 配置"} 结果:\n`);
 
   const icons: Record<string, string> = {
-    added:       "🆕",
-    skipped:     "⏭️",
+    added: "🆕",
+    skipped: "⏭️",
     overwritten: "🔄",
   };
 

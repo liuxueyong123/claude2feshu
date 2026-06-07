@@ -18,6 +18,7 @@ Claude Code ↔ 飞书双向通信。在飞书群里 **@机器人** 发送指令
 - [前置要求](#前置要求)
 - [快速开始](#快速开始)
 - [命令参考](#命令参考)
+- [开发维护指南](#开发维护指南)
 - [日志与诊断](#日志与诊断)
 - [系统架构](#系统架构)
 - [入站流程 (飞书 → Claude Code 终端)](#入站流程-飞书--claude-code-终端)
@@ -76,6 +77,8 @@ pnpm setup-hooks
 ```
 
 自动将通知 hooks 写入 `~/.claude/settings.json`，与已有配置合并。执行 `pnpm setup-hooks --dry-run` 可预览不写入。
+如果已有 claude2feishu hook，默认跳过；执行 `pnpm setup-hooks --force` 可覆盖旧配置。
+`PostToolUseFailure` 默认只匹配读写、搜索、Agent 等工具失败，并排除 Bash，避免探索性 Shell 失败频繁打断。
 
 ### 4. 启动
 
@@ -128,6 +131,114 @@ pnpm status       # 验证运行状态
 | `pnpm build`        | 编译到 `dist/`               |
 | `pnpm test-webhook` | 测试 API 发送卡片            |
 | `pnpm test-api`     | 测试 API 拉取消息 (不过滤 @) |
+
+---
+
+## 开发维护指南
+
+### 本地开发入口
+
+常用验证顺序:
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
+开发时主要修改 `src/`。`notify.sh` 和 package scripts 通过 `tsx` 直接运行 TypeScript 源码；`dist/` 是 `pnpm build` 生成的编译产物。维护运行时代码后，至少执行 `pnpm typecheck` 和 `pnpm test`；改动 CLI、hook 或发布相关行为时，再执行 `pnpm build` 确认产物可生成。
+
+涉及飞书真实 API 的命令依赖 `.env`:
+
+```bash
+pnpm test-webhook
+pnpm test-api
+pnpm once
+```
+
+这些命令会访问真实飞书应用和群聊，适合作为手工冒烟测试，不应放进无凭证的 CI 必跑链路。
+
+### 模块职责
+
+| 模块 | 维护边界 |
+| ---- | -------- |
+| `src/config.ts` | `.env` / 环境变量读取、API 常量、运行时数据路径。 |
+| `src/feishu_api.ts` | 飞书 Open API、token、消息拉取、@过滤、卡片发送、卡片到 session 映射。 |
+| `src/feishu_bot.ts` | 轮询守护进程、增量 checkpoint、入站消息路由、无法投递时入队。 |
+| `src/notify.ts` | Claude Code hook 入口、通知卡片内容、session 生命周期、Stop 后引用回复。 |
+| `src/terminal.ts` | Claude 进程发现、TTY 检测、transcript 状态判断、AppleScript 精确投递。 |
+| `src/message_queue.ts` | JSONL 待投递队列，通用 inbox 和 session 专属 pending 语义。 |
+| `src/delivery_orchestrator.ts` | Hook 驱动的单条串行投递策略。 |
+| `src/session_state.ts` | session → PID/TTY/transcript 映射和活跃进程判定。 |
+| `src/delivery_tracker.ts` | 最近投递的飞书消息 ID，用于 Stop 时引用回复原始消息。 |
+| `src/setup-hooks.ts` | 生成并合并 Claude Code hooks 到 `~/.claude/settings.json`。 |
+| `src/cli.ts` | 用户命令入口，负责守护进程、inbox、session、测试命令分发。 |
+
+维护原则:
+
+- 飞书协议、消息结构和卡片格式变化优先收敛在 `feishu_api.ts`。
+- Claude Code hook 输入、通知文案和 session 生命周期变化优先收敛在 `notify.ts`。
+- 终端定位、AppleScript、transcript 判定变化优先收敛在 `terminal.ts`，不要在 bot/notify 层复制进程发现逻辑。
+- 队列投递保持“每次 hook 最多一条”，避免在 Claude 刚空闲时连续写入多条指令。
+
+### 运行时数据与测试隔离
+
+生产运行时数据默认写入 `~/.claude/feishu/`。测试通过 `FEISHU_DATA_DIR` 覆盖数据目录，避免污染真实队列和 session 状态。新增会读写运行时文件的模块时，应沿用这个约定，测试中使用临时目录并在用例结束后恢复环境变量。
+
+关键数据文件:
+
+| 文件 | 维护注意点 |
+| ---- | ---------- |
+| `message_queue.jsonl` | 追加式队列；修改状态时保持 pending/delivered 语义稳定。 |
+| `session_states.json` | JSON 数组；保存时会清理过期 session。 |
+| `card_session_map.jsonl` | 追加式映射；查询从后往前取最近匹配。 |
+| `delivery_tracker.json` | session 最近投递消息映射；Stop 引用回复后清理。 |
+| `feishu_checkpoint.json` | 守护进程增量拉取 checkpoint；调试重复消费时可检查它。 |
+
+### Hook 配置维护
+
+`pnpm setup-hooks` 只追加或覆盖 claude2feishu 自己的 hook，不移除用户其他 Claude Code 配置。当前生成的是 Claude Code 新式嵌套 hook 结构:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude2feishu/notify.sh --title 'Claude 已启动' --type info"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Write|Edit|Read|WebFetch|WebSearch|Grep|Glob|Task|Agent|AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude2feishu/notify.sh --title 'Claude 操作失败' --type error"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+如需接收 Bash 失败通知，可手动把 `PostToolUseFailure.matcher` 改为空字符串；默认排除 Bash 是为了降低噪音。
+
+### 调试路径
+
+| 现象 | 优先检查 |
+| ---- | -------- |
+| 飞书收不到 Claude 通知 | `.env` 凭证、`pnpm test-webhook`、`~/.claude/feishu/feishu_error.log`、`~/.claude/settings.json` hook 命令路径。 |
+| 飞书 @机器人无响应 | `pnpm status`、`pnpm once`、`feishu_checkpoint.json`、应用权限、机器人是否在目标群。 |
+| 消息没有投到终端 | `pnpm session-list`、`pnpm session-state <sid>`、`session_states.json`、终端是否为 iTerm/Terminal.app、macOS AppleScript 权限。 |
+| 引用卡片路由错误 | `message_dump.jsonl`、`card_session_map.jsonl`、消息中的 `reply_to` / `parent_id` / `root_id`。 |
+| Claude 忙时消息没有继续投递 | `message_queue.jsonl`、`pnpm session-queue <sid>`、最近一次 Stop/SessionEnd hook 是否触发。 |
 
 ---
 
@@ -506,13 +617,24 @@ Claude Code 在 `~/.claude/settings.json` 中配置 hooks:
 ```json
 {
   "hooks": {
-    "SessionStart": [{ "command": ".../notify.sh --title ' 已启动' --type info" }],
-    "Stop": [{ "command": ".../notify.sh --title ' 任务完成' --type success" }],
-    "StopFailure": [{ "command": ".../notify.sh --title ' 异常终止' --type error" }],
-    "PermissionRequest": [{ "command": ".../notify.sh --title ' 等待确认' --type warning" }],
-    "PermissionDenied": [{ "command": ".../notify.sh --title ' 权限拒绝' --type error" }],
-    "Elicitation": [{ "command": ".../notify.sh --title ' 等待输入' --type warning" }],
-    "PostToolUseFailure": [{ "command": ".../notify.sh --title ' 操作失败' --type error" }]
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": ".../notify.sh --title 'Claude 已启动' --type info" }]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": ".../notify.sh --title 'Claude 任务完成' --type success" }]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Write|Edit|Read|WebFetch|WebSearch|Grep|Glob|Task|Agent|AskUserQuestion",
+        "hooks": [{ "type": "command", "command": ".../notify.sh --title 'Claude 操作失败' --type error" }]
+      }
+    ]
   }
 }
 ```
@@ -1015,7 +1137,7 @@ T+0s   用户在 iTerm 或 Terminal.app 启动 Claude Code
        notify.ts: findMyClaudeProcess() → {pid: 12345, tty: "ttys002"}
          (沿 PPID 链失败时回退 findClaudeProcess())
        notify.ts: registerSession({status: "active", pid: 12345, tty: "ttys002"})
-       notify.ts: sendChatCard(" 已启动", ...) → card om_start
+       notify.ts: sendChatCard("Claude 已启动", ...) → card om_start
        registerCardSession("om_start", "session-uuid")
        transcript 文件中可能只有 system 消息，无 assistant/user 消息
 
@@ -1171,6 +1293,10 @@ src/
 │                      #  - Stop/StopFailure: 查 delivery_tracker → replyCard 引用
 │                      #    回复原始飞书消息, 无记录则 sendChatCard 新消息
 │                      #  - SessionEnd: 标记空闲 + 单条队列投递
+├── setup-hooks.ts     # Claude Code hooks 配置工具
+│                      #  - 生成 SessionStart/Stop/权限/失败等 hook
+│                      #  - 合并 ~/.claude/settings.json，保留用户其他配置
+│                      #  - --dry-run 预览，--force 覆盖已有 claude2feishu hook
 └── cli.ts             # 统一 CLI 入口
                        #  - daemon 模式: spawn 子进程 + stdio 重定向
                        #  - 守护进程管理: start/stop/restart/status
@@ -1178,10 +1304,14 @@ src/
                        #  - Session 管理: session-list/state/queue/send
                        #  - 测试: test / test-webhook / test-api
 tests/
-├── feishu_api.test.ts       # @过滤 + 卡片 payload 大小
-├── feishu_bot.test.ts       # 收件箱降级回复文案
-├── message_queue.test.ts    # inbox/session pending 语义
-└── delivery_orchestrator.test.ts # 单条队列投递
+├── delivery_orchestrator.test.ts # 单条队列投递与优先级
+├── delivery_tracker.test.ts      # session → 飞书消息 ID 追踪
+├── feishu_api.test.ts            # @过滤、文本提取、引用 ID、卡片 payload
+├── feishu_bot.test.ts            # 收件箱降级与回复文案
+├── message_queue.test.ts         # inbox/session pending 语义
+├── notify.test.ts                # 通知内容、pending 摘要、截断
+├── session_state.test.ts         # session 注册、查询、活跃判定
+└── terminal.test.ts              # transcript 状态检测与 AppleScript 构造
 ```
 
 ## License
