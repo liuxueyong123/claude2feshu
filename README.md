@@ -4,7 +4,7 @@ Claude Code ↔ 飞书双向通信。在飞书群里 **@机器人** 发送指令
 
 这个项目由两条链路组成：
 
-- **飞书 → Claude Code**: 守护进程轮询飞书群消息，按引用卡片或活跃 session 路由，再通过 iTerm2 AppleScript 写入 Claude Code 终端。
+- **飞书 → Claude Code**: 守护进程轮询飞书群消息，按引用卡片或活跃 session 路由，再通过终端 AppleScript 精确写入 Claude Code 所在 TTY。
 - **Claude Code → 飞书**: Claude Code Hooks 调用 `notify.sh`，把 session 生命周期、权限请求、失败信息和最终输出发送为飞书卡片。
 
 阅读建议：
@@ -32,7 +32,7 @@ Claude Code ↔ 飞书双向通信。在飞书群里 **@机器人** 发送指令
 ## 前置要求
 
 - Node.js 22+ 和 pnpm。
-- macOS + iTerm2。自动投递依赖 AppleScript 枚举 iTerm2 session 并匹配 TTY。
+- macOS + iTerm 或 Terminal.app。自动投递依赖 AppleScript 枚举终端 session/tab 并匹配 TTY。
 - 本地 Claude Code，且能配置 `~/.claude/settings.json` hooks。
 - 飞书自建应用：已添加机器人能力、发布应用、把机器人加入目标群。
 - 飞书应用权限：`im:chat:readonly` / `im:message:read` / `im:message:send`。
@@ -96,7 +96,7 @@ pnpm start        # 后台守护进程
 pnpm status       # 验证运行状态
 ```
 
-在飞书群里 @机器人 发一条消息，会收到确认卡片。如果本地有 Claude Code 在 iTerm2 中运行，消息会自动发送到终端。
+在飞书群里 @机器人 发一条消息，会收到确认卡片。如果本地有 Claude Code 在 iTerm 或 Terminal.app 中运行，消息会自动发送到对应终端。
 
 ---
 
@@ -179,7 +179,7 @@ cat ~/.claude/feishu/session_states.json | python3 -m json.tool
 
 ## 技术栈
 
-TypeScript + Node.js 22 + tsx + 飞书 Open API + AppleScript (iTerm2)
+TypeScript + Node.js 22 + tsx + 飞书 Open API + AppleScript (iTerm / Terminal.app)
 
 ## 系统架构
 
@@ -231,7 +231,7 @@ TypeScript + Node.js 22 + tsx + 飞书 Open API + AppleScript (iTerm2)
                          Stop 时查询 delivery_tracker → replyCard 引用回复原始消息
                          SessionStart/Stop 额外触发 deliverNextPending() → 投递队列中的下一条消息
 
-入站 (飞书 → Claude):   轮询 API → feishu_bot.ts → 路由分发 → terminal.ts sendViaITerm()
+入站 (飞书 → Claude):   轮询 API → feishu_bot.ts → 路由分发 → terminal.ts sendToTerminal()
                          无法立即投递 → enqueue() → 等待 hook 触发 deliverNextPending()
                          投递成功 → recordDelivery(session, msgId) 写入映射
 ```
@@ -423,7 +423,7 @@ lookupCardSession(quotedMessageId):
 4. 按状态分发:
 
    ┌──────────┬────────────────────────────────────────────────────┐
-   │ waiting  │ ok = sendViaITerm(session.tty, text)               │
+   │ waiting  │ ok = sendToTerminal(session.tty, text)              │
    │          │                                                    │
    │          │ 成功 → replyCard("✅ 已投递",                        │
    │          │          "指令已发送到终端处理。")                    │
@@ -447,32 +447,31 @@ lookupCardSession(quotedMessageId):
    └──────────┴────────────────────────────────────────────────────┘
 ```
 
-### 步骤 7: iTerm2 消息发送 — `sendViaITerm()`
+### 步骤 7: 终端消息发送 — `sendToTerminal()`
 
 ```
 1. 转义消息文本 (AppleScript 安全):
    \ → \\,  " → \",  换行 → 空格,  \r → 空
 
-2. 构造 AppleScript:
-   tell application "iTerm2"
-     repeat with w in windows
-       repeat with t in tabs of w
-         repeat with s in sessions of t
-           if (tty of s) ends with "{tty}" then
-             tell s
-               write text "${escaped_message}"
-             end tell
-             return "ok"
-           end if
-         end repeat
-       end repeat
-     end repeat
-     return "not_found"
-   end tell
+2. 按优先级构造 AppleScript:
 
-3. execSync("osascript", {input: script, timeout: 5000})
+   iTerm / iTerm2:
+   - 检查 `/Applications/iTerm.app` 或 `/Applications/iTerm2.app`
+   - 枚举 window → tab → session
+   - 匹配 `(tty of s) ends with "{tty}"`
+   - 命中后 `write text "${escaped_message}"`
+
+   Terminal.app:
+   - 使用 `/System/Applications/Utilities/Terminal.app`
+   - 枚举 window → tab
+   - 匹配 `(tty of t) ends with "{tty}"`
+   - 命中后 `do script "${escaped_message}" in t`
+
+3. execSync("osascript", { input: script, timeout: 5000 })
    → result === "ok" → true (成功)
    → 其他 / 异常 → false (失败)
+
+注意: 不使用 System Events `keystroke` 作为通用回退。它只能对前台窗口打字，不能按 TTY 精确定位，可能误投递到错误终端。无法精确定位时返回 false，消息保留在队列中。
 ```
 
 ### 步骤 8: 单条延迟投递 — `deliverNextPending()`
@@ -500,7 +499,7 @@ lookupCardSession(quotedMessageId):
 
   if state === "waiting":
     只取第一条消息
-    ok = sendViaITerm(tty, message)
+    ok = sendToTerminal(tty, message)
     ok  → markDelivered(msgId) + replyCard("✅ 已投递")
     失败 → 保持 pending + replyCard("⚠️ 投递失败")
 
@@ -968,12 +967,12 @@ T+1s   feishu_bot 轮询到消息
        getQuotedMessageId() → "" (无引用)
        listActive() → [session] (1 个活跃)
        detectState(transcript) → "waiting"
-       sendViaITerm("ttys002", "运行测试")
-         → AppleScript 找到 ttys002 → write text "运行测试"
+       sendToTerminal("ttys002", "运行测试")
+         → AppleScript 找到 ttys002 所在 session/tab → 写入 "运行测试"
          → 返回 "ok"
        recordDelivery(sid, msgId)  ← 记录映射: session → 飞书消息 ID
        replyCard("✅ 已投递", ...)   ← 回复原始消息
-T+1.5s iTerm2 终端出现 "运行测试"，Claude Code 开始处理
+T+1.5s 对应终端出现 "运行测试"，Claude Code 开始处理
 T+N s  Claude Code 处理完毕 → Stop hook 触发
        notify.ts → getLastDelivery(sid) → 查到 msgId
        notify.ts → replyCard(msgId, "✅ Claude 已响应", ...)  ← 引用回复，形成线程
@@ -994,7 +993,7 @@ T+1s   feishu_bot 轮询到消息
        handleSessionMessage(..., "session-A-uuid")
        session = getSession("session-A-uuid") → {tty: "ttys002"}
        detectState("ttys002" 的 transcript) → "waiting"
-       sendViaITerm("ttys002", "继续") → ✅
+       sendToTerminal("ttys002", "继续") → ✅
 T+1.5s "继续" 出现在 session-A (ttys002)，session-B 不受影响
 ```
 
@@ -1002,7 +1001,7 @@ T+1.5s "继续" 出现在 session-A (ttys002)，session-B 不受影响
 
 ```
 T+0s   用户 @机器人 "运行测试"
-       → sendViaITerm → Claude 开始处理
+       → sendToTerminal → Claude 开始处理
        → transcript: assistant + stop_reason="tool_use" → busy
 
 T+3s   用户又 @机器人 "再检查一下"
@@ -1014,7 +1013,7 @@ T+3s   用户又 @机器人 "再检查一下"
 T+30s  Claude 处理完毕
        transcript: assistant + stop_reason="end_turn" → waiting
        Stop hook 触发 deliverNextPending()
-       sendViaITerm("再检查一下") → ✅
+       sendToTerminal("再检查一下") → ✅
        markDelivered(msgId)
 
 T+31s  Claude 开始处理第二条消息
@@ -1023,7 +1022,7 @@ T+31s  Claude 开始处理第二条消息
 ### 场景 D: Claude 刚启动，尚无交互对话
 
 ```
-T+0s   用户在 iTerm2 启动 Claude Code
+T+0s   用户在 iTerm 或 Terminal.app 启动 Claude Code
        SessionStart hook 触发
        notify.ts: findMyClaudeProcess() → {pid: 12345, tty: "ttys002"}
          (沿 PPID 链失败时回退 findClaudeProcess())
@@ -1042,7 +1041,7 @@ T+3s   feishu_bot 轮询到消息
        detectState(transcript) → 无有效 message → "gone"
        ⚡ isProcessAlive(12345) → true!
        ⚡ 降级: state = "waiting"
-       sendViaITerm("ttys002", "你好") → ✅
+       sendToTerminal("ttys002", "你好") → ✅
        replyCard("✅ 已投递")
 ```
 
@@ -1084,7 +1083,7 @@ T+1s   feishu_bot 轮询到消息
        listActive() → [session-A] (1 个活跃)
        → 自动路由到 session-A
        handleSessionMessage(..., "session-A-uuid")
-       → sendViaITerm("继续")
+       → sendToTerminal("继续")
 ```
 
 ### 场景 G: Claude 已退出
@@ -1103,7 +1102,7 @@ T+60s  用户重新启动 Claude Code
        getInboxPending() → 有 1 条 pending
        sendNotification("📥 收件箱待处理", "1 条: 运行测试")
        deliverNextPending()
-       sendViaITerm("运行测试") → ✅
+       sendToTerminal("运行测试") → ✅
        markDelivered(msgId)
 
        如果还有其他 pending 消息，等待下一次 Stop/SessionEnd hook 再投递
@@ -1164,9 +1163,9 @@ src/
 │                      #  - getLastDelivery: 查询最近投递的飞书消息 ID
 │                      #  - clearDelivery: 回复后清除记录
 │                      #  - 存储: delivery_tracker.json
-├── terminal.ts        # 终端交互 (macOS + iTerm2)
+├── terminal.ts        # 终端交互 (macOS + iTerm / Terminal.app)
 │                      #  - detectState: 读 transcript 判断 Claude 状态
-│                      #  - sendViaITerm: AppleScript 发送文本到指定 TTY
+│                      #  - sendToTerminal: AppleScript 发送文本到指定 TTY
 │                      #  - findMyClaudeProcess: 沿 PPID 链定位当前 hook 所属 Claude 进程
 │                      #  - findClaudeProcess: 全局 ps 查找 Claude Code 进程（回退）
 │                      #  - detectTTY: tty 命令获取当前终端名

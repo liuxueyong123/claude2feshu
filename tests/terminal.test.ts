@@ -113,3 +113,23 @@ test("sendToTerminal returns false for non-existent TTY device", async () => {
   const { sendToTerminal } = await import("../src/terminal.js");
   assert.equal(sendToTerminal("ttys99999", "hello"), false);
 });
+
+test("buildTerminalAppScript targets a Terminal tab by tty", async () => {
+  const { buildTerminalAppScript } = await import("../src/terminal.js");
+
+  const script = buildTerminalAppScript("ttys001", "hello");
+
+  assert.match(script, /tell application "\/System\/Applications\/Utilities\/Terminal\.app"/);
+  assert.match(script, /repeat with t in tabs of w/);
+  assert.match(script, /if \(tty of t\) ends with "ttys001" then/);
+  assert.match(script, /do script "hello" in t/);
+});
+
+test("buildTerminalAppScript escapes message text for AppleScript", async () => {
+  const { buildTerminalAppScript } = await import("../src/terminal.js");
+
+  const script = buildTerminalAppScript("ttys001", "say \"hi\"\nthen \\ ok");
+
+  assert.match(script, /do script "say \\"hi\\" then \\\\ ok" in t/);
+  assert.doesNotMatch(script, /say \\"hi\\"\nthen/);
+});

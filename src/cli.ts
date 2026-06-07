@@ -10,7 +10,7 @@ import { PID_FILE, CHECKPOINT_FILE, LOG_FILE } from "./config.js";
 import { log } from "./logger.js";
 import { listActive, getSession } from "./session_state.js";
 import { listPendingSessions } from "./message_queue.js";
-import { detectState, sendViaITerm } from "./terminal.js";
+import { detectState, sendToTerminal } from "./terminal.js";
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
       if (a3 && a4) {
         const session = getSession(a3);
         if (session) {
-          const ok = sendViaITerm(session.tty, a4);
+          const ok = sendToTerminal(session.tty, a4);
           console.log(ok ? `✅ 已发送到 tty=${session.tty}` : "❌ 发送失败");
         } else {
           console.log("Session 不存在");

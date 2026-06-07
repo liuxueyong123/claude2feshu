@@ -23,7 +23,7 @@ export interface OrchestratorDeps {
   transcriptPath: string;
   pid: number;
   getState?: () => ClaudeState;
-  sendViaITerm: (tty: string, message: string) => boolean;
+  sendToTerminal: (tty: string, message: string) => boolean;
   replyCard: (msgId: string, title: string, content: string, color: string, sessionId?: string) => Promise<unknown>;
 }
 
@@ -62,7 +62,7 @@ export async function deliverNextPending(deps: OrchestratorDeps): Promise<Orches
   }
 
   const item = messages[0];
-  const ok = deps.sendViaITerm(deps.tty, item.content);
+  const ok = deps.sendToTerminal(deps.tty, item.content);
   if (!ok) {
     await deps.replyCard(
       item.id,

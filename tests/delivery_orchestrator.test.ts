@@ -37,7 +37,7 @@ test("deliverNextPending sends only one current-session message per trigger", as
       transcriptPath: "",
       pid: process.pid,
       getState: () => "waiting",
-      sendViaITerm: (_tty: string, message: string) => {
+      sendToTerminal: (_tty: string, message: string) => {
         sent.push(message);
         return true;
       },

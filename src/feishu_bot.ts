@@ -6,7 +6,7 @@ import { log } from "./logger.js";
 import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, lookupCardSession } from "./feishu_api.js";
 import { enqueue, pendingCount } from "./message_queue.js";
 import type { QueuedMessage } from "./message_queue.js";
-import { detectState, sendViaITerm } from "./terminal.js";
+import { detectState, sendToTerminal } from "./terminal.js";
 import { getSession, findByPrefix, listActive, isProcessAlive } from "./session_state.js";
 import { recordDelivery } from "./delivery_tracker.js";
 
@@ -188,7 +188,7 @@ async function handleSessionMessage(msgId: string, chatId: string, sender: strin
 
   switch (state) {
     case "waiting": {
-      const ok = sendViaITerm(session.tty, text);
+      const ok = sendToTerminal(session.tty, text);
       if (ok) {
         await replyCard(msgId, "✅ 已投递", `指令已发送到终端处理。\n\n> ${text.slice(0, 200)}`, "green", sid);
         recordDelivery(sid, msgId);

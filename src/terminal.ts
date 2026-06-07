@@ -1,8 +1,15 @@
 /**
- * 终端交互 — Claude Code 状态检测 + iTerm2 AppleScript 发送
+ * 终端交互 — Claude Code 状态检测 + 键盘输入注入
  *
- * 依赖: macOS + iTerm2 + AppleScript 权限
- * 回退: 检测失败时返回 false，调用方降级为队列模式
+ * 通过 AppleScript 往终端模拟器注入键盘输入：
+ *   iTerm2: write text (精准定位 session, 不抢焦点)
+ *   Terminal.app: do script in tab (精准定位 tab)
+ *
+ * 注意: 直接写 PTY slave (/dev/<tty>) 只能向终端显示文本，不能注入 stdin 输入。
+ * PTY 的数据方向是 slave→master（输出），键盘方向是 master→slave（输入）。
+ *
+ * 依赖: macOS + 终端模拟器 AppleScript 权限
+ * 回退: 全部失败时返回 false，调用方降级为队列模式
  */
 import { readFileSync, existsSync } from "node:fs";
 import { execSync } from "node:child_process";
@@ -15,6 +22,9 @@ interface TranscriptMessage {
   role?: string;
   stop_reason?: string | null;
 }
+
+const TERMINAL_APP_PATH = "/System/Applications/Utilities/Terminal.app";
+const ITERM_APP_PATHS = ["/Applications/iTerm.app", "/Applications/iTerm2.app"];
 
 // ---- 状态检测 ----
 
@@ -69,36 +79,36 @@ export function detectState(transcriptPath: string): ClaudeState {
   }
 }
 
-// ---- iTerm2 发送 ----
+// ---- 终端发送 ----
 
 /**
- * 通过 AppleScript 往 iTerm2 的指定 TTY session 发送文本。
+ * 往 Claude Code 所在终端注入键盘输入（文本 + 回车）。
  *
- * 原理: 枚举 iTerm2 所有 session，匹配 tty 名称，write text 模拟键盘输入。
- * 返回 true 表示成功发送。
+ * 策略（按优先级）:
+ *   1. iTerm2: AppleScript write text（精准定位 TTY session，不抢焦点）
+ *   2. Terminal.app: AppleScript do script in tab（精准定位 TTY tab）
+ *
+ * 直接 PTY 写入不可行: 写入 /dev/<tty> slave 的数据流向 master（终端显示），
+ * 而非反向注入进程 stdin。参见 pty(4): "anything written on the replica
+ * device is presented as input on the primary device".
+ *
+ * 返回 true 表示成功注入键盘输入。
  */
-export function sendViaITerm(tty: string, message: string): boolean {
+export function sendToTerminal(tty: string, message: string): boolean {
   if (!tty || !message.trim()) return false;
 
-  const escaped = escapeAppleScript(message);
+  const itermApp = findITermApp();
+  if (itermApp && runAppleScript(buildITermScript(itermApp, tty, message))) return true;
+  if (runAppleScript(buildTerminalAppScript(tty, message))) return true;
 
-  const script = `
-tell application "iTerm2"
-  repeat with w in windows
-    repeat with t in tabs of w
-      repeat with s in sessions of t
-        if (tty of s) ends with "${tty}" then
-          tell s
-            write text "${escaped}"
-          end tell
-          return "ok"
-        end if
-      end repeat
-    end repeat
-  end repeat
-  return "not_found"
-end tell`.trim();
+  return false;
+}
 
+function findITermApp(): string {
+  return ITERM_APP_PATHS.find((path) => existsSync(path)) ?? "";
+}
+
+function runAppleScript(script: string): boolean {
   try {
     const result = execSync("osascript", {
       input: script,
@@ -111,8 +121,59 @@ end tell`.trim();
   }
 }
 
-// ---- 辅助 ----
+function buildITermScript(appPath: string, tty: string, message: string): string {
+  const escapedAppPath = escapeAppleScript(appPath);
+  const escapedTty = escapeAppleScript(tty);
+  const escapedMessage = escapeAppleScript(message);
 
+  return `
+if application "${escapedAppPath}" is not running then return "not_running"
+tell application "${escapedAppPath}"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        if (tty of s) ends with "${escapedTty}" then
+          tell s
+            write text "${escapedMessage}"
+          end tell
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end repeat
+  return "not_found"
+end tell`.trim();
+}
+
+/**
+ * 构建 Terminal.app 精确投递脚本。
+ *
+ * Terminal.app 的 tab 暴露 tty 属性，可以像 iTerm2 一样按 TTY 定位，
+ * 避免 System Events keystroke 把内容打到前台错误窗口。
+ */
+export function buildTerminalAppScript(tty: string, message: string): string {
+  const escapedTty = escapeAppleScript(tty);
+  const escapedMessage = escapeAppleScript(message);
+
+  return `
+if application "${TERMINAL_APP_PATH}" is not running then return "not_running"
+tell application "${TERMINAL_APP_PATH}"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if (tty of t) ends with "${escapedTty}" then
+        do script "${escapedMessage}" in t
+        return "ok"
+      end if
+    end repeat
+  end repeat
+  return "not_found"
+end tell`.trim();
+}
+
+/**
+ * AppleScript 字符串转义。
+ * 换行替换为空格，因为 write text 本身会按回车发送。
+ */
 function escapeAppleScript(s: string): string {
   return s
     .replace(/\\/g, "\\\\")
@@ -121,7 +182,7 @@ function escapeAppleScript(s: string): string {
     .replace(/\r/g, "");
 }
 
-/** 获取当前终端的 TTY 名称（在 hook 环境中使用） */
+/** 获取当前终端的 TTY 名称 */
 export function detectTTY(): string {
   try {
     const raw = execSync("tty", { encoding: "utf-8", timeout: 1000 }).trim();
@@ -134,7 +195,7 @@ export function detectTTY(): string {
 
 /**
  * 通过 ps 查找 Claude Code 进程的 PID 和 TTY。
- * 用于 feishu_bot 定位 Claude Code 进程。
+ * 通用实现，不依赖特定终端模拟器。
  */
 export function findClaudeProcess(): { pid: number; tty: string } | null {
   try {

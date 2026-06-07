@@ -5,7 +5,7 @@
 import { sendChatCard, replyCard } from "./feishu_api.js";
 import { getInboxPending, getPending as getPendingMessages, markDelivered } from "./message_queue.js";
 import { registerSession, markIdle, isProcessAlive, getSession } from "./session_state.js";
-import { findMyClaudeProcess, sendViaITerm } from "./terminal.js";
+import { findMyClaudeProcess, sendToTerminal } from "./terminal.js";
 import { getLastDelivery, clearDelivery } from "./delivery_tracker.js";
 import { log } from "./logger.js";
 import { readFileSync, existsSync } from "node:fs";
@@ -411,7 +411,7 @@ async function deliverNextInBackground(pid: number, tty: string, sid: string, tr
     tty,
     transcriptPath,
     pid,
-    sendViaITerm,
+    sendToTerminal,
     replyCard,
   });
 
