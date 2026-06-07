@@ -3,6 +3,7 @@
  */
 import { config } from "../config.js";
 import { log } from "../logger.js";
+import { storage } from "../storage.js";
 
 let _token = { value: "", expiresAt: 0 };
 let _botOpenId = "";
@@ -350,8 +351,6 @@ export async function sendChatCard(title: string, content: string, color = "blue
 }
 
 // ---- 卡片 → Session 映射（数据在 storage）----
-
-import { storage } from "../storage.js";
 
 export function registerCardSession(messageId: string, sessionId: string): void {
   if (!messageId || !sessionId) return;

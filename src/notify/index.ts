@@ -1,7 +1,6 @@
 /**
  * Claude Code → 飞书通知
  * 构建 hook 事件上下文，推送卡片到飞书群。
- * 核心逻辑被 notifyd HTTP 服务调用。
  */
 import { sendChatCard, replyCard } from "../feishu/api.js";
 import { getInboxPending, getPending as getPendingMessages } from "../session/queue.js";
