@@ -3,7 +3,7 @@
  */
 import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { config, DATA_DIR, API_BASE, REQUEST_TIMEOUT_MS } from "../config.js";
+import { config } from "../config.js";
 import { log } from "../logger.js";
 
 let _token = { value: "", expiresAt: 0 };
@@ -30,7 +30,7 @@ export interface FeishuChat {
 // ---- 请求封装 ----
 
 async function req(method: string, path: string, body?: unknown, params?: Record<string, string>, auth = true): Promise<[number, Record<string, unknown>]> {
-  const url = new URL(`${API_BASE}${path}`);
+  const url = new URL(`${config.apiBase}${path}`);
   if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   const headers: Record<string, string> = { "Content-Type": "application/json; charset=utf-8" };
   if (auth) {
@@ -40,7 +40,7 @@ async function req(method: string, path: string, body?: unknown, params?: Record
   }
   try {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+    const t = setTimeout(() => ctrl.abort(), config.requestTimeoutMs);
     const res = await fetch(url.toString(), { method, headers, body: body ? JSON.stringify(body) : undefined, signal: ctrl.signal });
     clearTimeout(t);
     const data = (await res.json()) as Record<string, unknown>;
@@ -354,7 +354,7 @@ export async function sendChatCard(title: string, content: string, color = "blue
 /** 将错误写入文件，方便 hook 环境下排查 */
 function errlog(msg: string) {
   try {
-    appendFileSync(resolve(DATA_DIR, "feishu_error.log"), `[${new Date().toISOString()}] ${msg}\n`);
+    appendFileSync(resolve(config.dataDir, "feishu_error.log"), `[${new Date().toISOString()}] ${msg}\n`);
   } catch {
     /* ignore */
   }
@@ -364,11 +364,11 @@ function errlog(msg: string) {
 // GET /im/v1/messages/{msg_id} 对 interactive 卡片返回降级格式，不含 markdown，
 // 因此无法从被引用的卡片内容中提取 session ID。改为发送卡片时本地记录映射。
 
-const CARD_MAP_FILE = resolve(DATA_DIR, "card_session_map.jsonl");
+const CARD_MAP_FILE = resolve(config.dataDir, "card_session_map.jsonl");
 
 function ensureMapDir(): void {
   try {
-    mkdirSync(DATA_DIR, { recursive: true });
+    mkdirSync(config.dataDir, { recursive: true });
   } catch {
     /* */
   }

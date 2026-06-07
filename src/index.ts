@@ -6,8 +6,7 @@
 import Koa from "koa";
 import bodyParser from "koa-bodyparser";
 import { writeFileSync, unlinkSync } from "node:fs";
-import { resolve } from "node:path";
-import { DATA_DIR, config } from "./config.js";
+import { config } from "./config.js";
 import { log } from "./logger.js";
 import { startPolling, stopPolling, isPolling } from "./bot/index.js";
 import { pendingCount } from "./session/queue.js";
@@ -16,13 +15,10 @@ import { router as notifyRouter } from "./notify/routes.js";
 import { router as sessionRouter } from "./session/routes.js";
 import { router as feishuRouter } from "./feishu/routes.js";
 
-const PORT = parseInt(process.env.FEISHU_NOTIFYD_PORT ?? "9876", 10);
-const HOST = process.env.FEISHU_NOTIFYD_HOST ?? "127.0.0.1";
-const PID_FILE = resolve(DATA_DIR, "service.pid");
 const startedAt = Date.now();
 
-function writePid(): void { writeFileSync(PID_FILE, String(process.pid), "utf-8"); }
-function removePid(): void { try { unlinkSync(PID_FILE); } catch { /* ignore */ } }
+function writePid(): void { writeFileSync(config.pidFile, String(process.pid), "utf-8"); }
+function removePid(): void { try { unlinkSync(config.pidFile); } catch { /* ignore */ } }
 
 const app = new Koa();
 app.use(bodyParser({ enableTypes: ["json"] }));
@@ -39,12 +35,12 @@ app.use(feishuRouter.routes());
 // /health
 app.use((ctx, next) => {
   if (ctx.path !== "/health") return next();
-  ctx.body = { ok: true, uptime: Math.floor((Date.now() - startedAt) / 1000), pid: process.pid, port: PORT, bot: isPolling() ? "polling" : "stopped", pending: pendingCount() };
+  ctx.body = { ok: true, uptime: Math.floor((Date.now() - startedAt) / 1000), pid: process.pid, port: config.port, bot: isPolling() ? "polling" : "stopped", pending: pendingCount() };
 });
 
-const server = app.listen(PORT, HOST, () => {
+const server = app.listen(config.port, config.host, () => {
   writePid();
-  log(`服务启动: http://${HOST}:${PORT} pid=${process.pid}`, "INFO");
+  log(`服务启动: http://${config.host}:${config.port} pid=${process.pid}`, "INFO");
   if (!config.appId || !config.appSecret) log("缺少 FEISHU_APP_ID/SECRET", "WARN");
   startPolling();
 });

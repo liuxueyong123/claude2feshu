@@ -17,8 +17,8 @@ import * as os from "node:os";
 // ── 常量 ────────────────────────────────────────────────────────
 
 const PROJECT_DIR = process.cwd();
-const NOTIFYD_PORT = parseInt(process.env.FEISHU_NOTIFYD_PORT ?? "9876", 10);
-const NOTIFYD_URL = `http://127.0.0.1:${NOTIFYD_PORT}`;
+import { config } from "./config.js";
+const NOTIFYD_URL = `http://127.0.0.1:${config.port}`;
 const SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json");
 
 interface HookDef {

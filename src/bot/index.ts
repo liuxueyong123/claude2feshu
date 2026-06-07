@@ -1,7 +1,7 @@
 /** 飞书消息轮询守护进程 — 后台拉取 @消息写入 inbox */
 import { writeFileSync, existsSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { config, CHECKPOINT_FILE, DATA_DIR } from "../config.js";
+import { config } from "../config.js";
 import { log } from "../logger.js";
 import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, lookupCardSession } from "../feishu/api.js";
 import { enqueue, pendingCount } from "../session/queue.js";
@@ -14,15 +14,15 @@ let running = false;
 let polling = false;
 
 function loadCkpt(): string {
-  if (!existsSync(CHECKPOINT_FILE)) return "";
+  if (!existsSync(config.checkpointFile)) return "";
   try {
-    return (JSON.parse(readFileSync(CHECKPOINT_FILE, "utf-8")) as { last_msg_id?: string }).last_msg_id ?? "";
+    return (JSON.parse(readFileSync(config.checkpointFile, "utf-8")) as { last_msg_id?: string }).last_msg_id ?? "";
   } catch {
     return "";
   }
 }
 function saveCkpt(msgId: string, msgTime: string): void {
-  writeFileSync(CHECKPOINT_FILE, JSON.stringify({ last_msg_id: msgId, last_time: msgTime }));
+  writeFileSync(config.checkpointFile, JSON.stringify({ last_msg_id: msgId, last_time: msgTime }));
 }
 
 export function stopPolling(): void {
@@ -68,7 +68,7 @@ async function processNewMessages(): Promise<string[]> {
     if (rawParent || rawRoot) {
       try {
         appendFileSync(
-          resolve(DATA_DIR, "message_dump.jsonl"),
+          resolve(config.dataDir, "message_dump.jsonl"),
           JSON.stringify({
             _ts: new Date().toISOString(),
             message_id: msg.message_id,

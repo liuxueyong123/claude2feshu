@@ -8,7 +8,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { DATA_DIR } from "../config.js";
+import { config } from "../config.js";
 
 // ---- 类型 ----
 
@@ -22,7 +22,7 @@ type TrackerData = Record<string, TrackerEntry>; // session_id → entry
 // ---- 存储 ----
 
 function dataDir(): string {
-  return process.env.FEISHU_DATA_DIR || DATA_DIR;
+  return process.env.FEISHU_DATA_DIR || config.dataDir;
 }
 
 function trackerFile(): string {
