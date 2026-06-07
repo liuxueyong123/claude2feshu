@@ -1,7 +1,7 @@
 import Router from "@koa/router";
 import { startPolling, stopPolling, isPolling, runOnce } from "./index.js";
 import { pendingCount } from "../session/queue.js";
-import { log } from "../logger.js";
+import { log } from "../utils/logger.js";
 
 const router = new Router();
 

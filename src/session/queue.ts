@@ -1,10 +1,12 @@
 /**
  * 统一消息队列 — 数据存储在 storage
  */
-import { storage, type QueuedMessage } from "../storage.js";
+import { storage, type QueuedMessage } from "../utils/storage.js";
 export type { QueuedMessage };
 
-export function enqueue(msg: QueuedMessage): void { storage.messages.push(msg); }
+export function enqueue(msg: QueuedMessage): void {
+  storage.messages = [...storage.messages, { ...msg }];
+}
 
 export function getPending(sessionId?: string): QueuedMessage[] {
   return storage.messages.filter(i => i.status === "pending" && (sessionId === undefined || i.session_id === sessionId));
@@ -17,8 +19,12 @@ export function getInboxPending(): QueuedMessage[] {
 export function pendingCount(sessionId?: string): number { return getPending(sessionId).length; }
 
 export function markDelivered(msgId: string): void {
-  const item = storage.messages.find(i => i.id === msgId && i.status === "pending");
-  if (item) { item.status = "delivered"; item.delivered_at = new Date().toISOString(); }
+  const deliveredAt = new Date().toISOString();
+  storage.messages = storage.messages.map((item) => (
+    item.id === msgId && item.status === "pending"
+      ? { ...item, status: "delivered", delivered_at: deliveredAt }
+      : item
+  ));
 }
 
 export function listPendingSessions(): { session_id: string; count: number }[] {

@@ -1,11 +1,11 @@
 /** 飞书消息轮询守护进程 — 后台拉取 @消息写入 inbox */
-import { config } from "../config.js";
-import { log } from "../logger.js";
-import { storage } from "../storage.js";
+import { config } from "../utils/config.js";
+import { log } from "../utils/logger.js";
+import { storage } from "../utils/storage.js";
 import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, lookupCardSession } from "../feishu/api.js";
 import { enqueue, pendingCount } from "../session/queue.js";
-import type { QueuedMessage } from "../storage.js";
-import { detectState, sendToTerminal } from "../terminal.js";
+import type { QueuedMessage } from "../utils/storage.js";
+import { detectState, sendToTerminal } from "../utils/terminal.js";
 import { getSession, findByPrefix, listActive, isProcessAlive } from "../session/state.js";
 import { recordDelivery } from "../session/delivery.js";
 

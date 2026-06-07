@@ -39,7 +39,7 @@ class Storage {
     this.sessions = this._read(`${d}/sessions.json`, []);
     this.messages = this._read(`${d}/messages.json`, []);
     this.delivery = this._read(`${d}/delivery.json`, {});
-    for (const [k, v] of this._read<[string, CardEntry][]>(`${d}/card_map.json`, [])) this.cardMap.set(k, v);
+    this.cardMap = new Map(this._read<[string, CardEntry][]>(`${d}/card_map.json`, []));
     const ck = this._read<{ last_msg_id?: string; last_time?: string }>(`${d}/checkpoint.json`, {});
     this.lastMsgId = ck.last_msg_id ?? ""; this.lastMsgTime = ck.last_time ?? "";
   }
@@ -48,6 +48,7 @@ class Storage {
     this._ensureDir();
     const cutoff = Date.now() - 24 * 3600_000;
     const alive = this.sessions.filter(s => new Date(s.last_heartbeat).getTime() > cutoff);
+    this.sessions = alive;
     this._write(`${config.dataDir}/sessions.json`, alive);
     this._write(`${config.dataDir}/messages.json`, this.messages);
     this._write(`${config.dataDir}/delivery.json`, this.delivery);

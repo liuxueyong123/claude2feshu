@@ -1,30 +1,36 @@
 /**
  * Session 状态追踪 — 数据存储在 storage
  */
-import { storage, type SessionState } from "../storage.js";
+import { storage, type SessionState } from "../utils/storage.js";
 export type { SessionState };
 
 export function registerSession(s: SessionState): void {
-  const { sessions } = storage;
   const now = new Date().toISOString();
-  for (const old of sessions) {
-    if (old.pid === s.pid && old.session_id !== s.session_id && old.status === "active") {
-      old.status = "idle"; old.last_heartbeat = now;
+  const hasExisting = storage.sessions.some((item) => item.session_id === s.session_id);
+  const next = storage.sessions.map((item) => {
+    if (item.session_id === s.session_id) {
+      return { ...item, ...s, last_heartbeat: now };
     }
-  }
-  const idx = sessions.findIndex(x => x.session_id === s.session_id);
-  if (idx >= 0) sessions[idx] = { ...sessions[idx], ...s, last_heartbeat: now };
-  else sessions.push({ ...s, last_heartbeat: now });
+    if (item.pid === s.pid && item.status === "active") {
+      return { ...item, status: "idle" as const, last_heartbeat: now };
+    }
+    return item;
+  });
+  storage.sessions = hasExisting ? next : [...next, { ...s, last_heartbeat: now }];
 }
 
 export function updateHeartbeat(sid: string): void {
-  const s = storage.sessions.find(x => x.session_id === sid);
-  if (s) s.last_heartbeat = new Date().toISOString();
+  const now = new Date().toISOString();
+  storage.sessions = storage.sessions.map((item) => (
+    item.session_id === sid ? { ...item, last_heartbeat: now } : item
+  ));
 }
 
 export function markIdle(sid: string): void {
-  const s = storage.sessions.find(x => x.session_id === sid);
-  if (s) { s.status = "idle"; s.last_heartbeat = new Date().toISOString(); }
+  const now = new Date().toISOString();
+  storage.sessions = storage.sessions.map((item) => (
+    item.session_id === sid ? { ...item, status: "idle", last_heartbeat: now } : item
+  ));
 }
 
 export function getSession(sid: string): SessionState | null {

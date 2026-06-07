@@ -1,9 +1,9 @@
 /**
  * 飞书 Open API 客户端 — token / 消息拉取 / @过滤 / 回复
  */
-import { config } from "../config.js";
-import { log } from "../logger.js";
-import { storage } from "../storage.js";
+import { config } from "../utils/config.js";
+import { log } from "../utils/logger.js";
+import { storage } from "../utils/storage.js";
 
 let _token = { value: "", expiresAt: 0 };
 let _botOpenId = "";
@@ -354,7 +354,10 @@ export async function sendChatCard(title: string, content: string, color = "blue
 
 export function registerCardSession(messageId: string, sessionId: string): void {
   if (!messageId || !sessionId) return;
-  storage.cardMap.set(messageId, { session_id: sessionId, sent_at: new Date().toISOString() });
+  storage.cardMap = new Map(storage.cardMap).set(messageId, {
+    session_id: sessionId,
+    sent_at: new Date().toISOString(),
+  });
   log(`card→session 已登记: ${messageId.slice(0, 16)}...`, "DEBUG");
 }
 

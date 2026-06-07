@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { checkInboxText, popInboxCommand } from "../src/notify/index.js";
 import { enqueue } from "../src/session/queue.js";
-import { storage } from "../src/storage.js";
+import { storage } from "../src/utils/storage.js";
 
 test("checkInboxText says empty when no pending inbox items", () => {
   storage.reset();

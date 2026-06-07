@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { enqueue, getPending, pendingCount, markDelivered, clearDelivered, listPendingSessions } from "../src/session/queue.js";
-import { storage } from "../src/storage.js";
+import { storage } from "../src/utils/storage.js";
 
 function m(id: string, sid?: string) {
   return { id, chat_id: "oc_1", sender: "ou_1", content: `${id} cnt`, session_id: sid, received_at: new Date().toISOString(), status: "pending" as const };

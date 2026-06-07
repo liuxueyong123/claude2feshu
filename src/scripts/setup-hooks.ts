@@ -17,7 +17,7 @@ import * as os from "node:os";
 // ── 常量 ────────────────────────────────────────────────────────
 
 const PROJECT_DIR = process.cwd();
-import { config } from "./config.js";
+import { config } from "../utils/config.js";
 const NOTIFYD_URL = `http://127.0.0.1:${config.port}`;
 const SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json");
 

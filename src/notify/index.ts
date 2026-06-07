@@ -5,9 +5,9 @@
 import { sendChatCard, replyCard } from "../feishu/api.js";
 import { getInboxPending, getPending as getPendingMessages } from "../session/queue.js";
 import { registerSession, markIdle, isProcessAlive, getSession } from "../session/state.js";
-import { findMyClaudeProcess, sendToTerminal } from "../terminal.js";
+import { findMyClaudeProcess, sendToTerminal } from "../utils/terminal.js";
 import { getLastDelivery, clearDelivery } from "../session/delivery.js";
-import { log } from "../logger.js";
+import { log } from "../utils/logger.js";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import { execSync } from "node:child_process";

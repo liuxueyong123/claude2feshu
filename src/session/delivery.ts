@@ -1,11 +1,11 @@
 /**
  * 投递追踪 + 统一投递编排 — 数据存储在 storage
  */
-import { storage } from "../storage.js";
-import type { QueuedMessage } from "../storage.js";
+import { storage } from "../utils/storage.js";
+import type { QueuedMessage } from "../utils/storage.js";
 import { getPending, markDelivered } from "./queue.js";
-import { detectState } from "../terminal.js";
-import type { ClaudeState } from "../terminal.js";
+import { detectState } from "../utils/terminal.js";
+import type { ClaudeState } from "../utils/terminal.js";
 import { isProcessAlive, getSession } from "./state.js";
 
 export interface OrchestratorDeps {
@@ -20,14 +20,20 @@ export interface OrchestratorResult { sent: number; failed: number; remaining: n
 // ── 投递追踪 ────────────────────────────────────────────────
 
 export function recordDelivery(sessionId: string, msgId: string): void {
-  storage.delivery[sessionId] = { msgId, timestamp: new Date().toISOString() };
+  storage.delivery = {
+    ...storage.delivery,
+    [sessionId]: { msgId, timestamp: new Date().toISOString() },
+  };
 }
 
 export function getLastDelivery(sessionId: string): string | null {
   return storage.delivery[sessionId]?.msgId ?? null;
 }
 
-export function clearDelivery(sessionId: string): void { delete storage.delivery[sessionId]; }
+export function clearDelivery(sessionId: string): void {
+  const { [sessionId]: _removed, ...next } = storage.delivery;
+  storage.delivery = next;
+}
 
 // ── 投递编排 ────────────────────────────────────────────────
 

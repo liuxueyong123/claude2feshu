@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { enqueue, getPending, getInboxPending } from "../src/session/queue.js";
-import { storage } from "../src/storage.js";
+import { storage } from "../src/utils/storage.js";
 import { deliverNextPending } from "../src/session/delivery.js";
 
 test("deliverNextPending sends only one current-session message per trigger", async () => {

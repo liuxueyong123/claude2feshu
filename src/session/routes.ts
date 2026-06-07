@@ -1,7 +1,7 @@
 import Router from "@koa/router";
 import { listActive, getSession } from "./state.js";
 import { getPending, listPendingSessions } from "./queue.js";
-import { detectState, sendToTerminal } from "../terminal.js";
+import { detectState, sendToTerminal } from "../utils/terminal.js";
 
 const router = new Router();
 

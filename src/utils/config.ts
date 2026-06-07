@@ -5,10 +5,10 @@ import "dotenv/config";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 function loadConfig() {
-  const dataDir = process.env.FEISHU_DATA_DIR || resolve(PROJECT_ROOT, "data");
+  const dataDir = process.env.FEISHU_DATA_DIR || resolve(projectRoot, "data");
 
   return {
     appId:            process.env.FEISHU_APP_ID     || "",

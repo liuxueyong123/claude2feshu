@@ -25,7 +25,7 @@ function cleanupTempFile(filePath: string): void {
 // ============================================================
 
 test("detectState returns 'waiting' when last assistant message has stop_reason=end_turn", async () => {
-  const { detectState } = await import("../src/terminal.js");
+  const { detectState } = await import("../src/utils/terminal.js");
   const file = writeTempTranscript([
     { message: { role: "assistant", model: "claude-sonnet-4-6", stop_reason: "end_turn", content: [{ type: "text", text: "done" }] } },
   ]);
@@ -36,7 +36,7 @@ test("detectState returns 'waiting' when last assistant message has stop_reason=
 });
 
 test("detectState returns 'busy' when last assistant message has stop_reason=tool_use", async () => {
-  const { detectState } = await import("../src/terminal.js");
+  const { detectState } = await import("../src/utils/terminal.js");
   const file = writeTempTranscript([
     { message: { role: "assistant", model: "claude-sonnet-4-6", stop_reason: "tool_use", content: [{ type: "tool_use", name: "Bash" }] } },
   ]);
@@ -47,7 +47,7 @@ test("detectState returns 'busy' when last assistant message has stop_reason=too
 });
 
 test("detectState returns 'busy' when last user message is recent (< 5 min)", async () => {
-  const { detectState } = await import("../src/terminal.js");
+  const { detectState } = await import("../src/utils/terminal.js");
   const now = new Date().toISOString();
   const file = writeTempTranscript([
     { message: { role: "user", content: [{ type: "text", text: "hello" }] }, timestamp: now },
@@ -59,7 +59,7 @@ test("detectState returns 'busy' when last user message is recent (< 5 min)", as
 });
 
 test("detectState returns 'gone' when last user message is older than 5 minutes", async () => {
-  const { detectState } = await import("../src/terminal.js");
+  const { detectState } = await import("../src/utils/terminal.js");
   const old = new Date(Date.now() - 400_000).toISOString(); // > 5 min
   const file = writeTempTranscript([
     { message: { role: "user", content: [{ type: "text", text: "hello" }] }, timestamp: old },
@@ -71,19 +71,19 @@ test("detectState returns 'gone' when last user message is older than 5 minutes"
 });
 
 test("detectState returns 'gone' when transcript file does not exist", async () => {
-  const { detectState } = await import("../src/terminal.js");
+  const { detectState } = await import("../src/utils/terminal.js");
   const state = detectState("/tmp/nonexistent-transcript-12345.jsonl");
   assert.equal(state, "gone");
 });
 
 test("detectState returns 'gone' when transcript path is empty string", async () => {
-  const { detectState } = await import("../src/terminal.js");
+  const { detectState } = await import("../src/utils/terminal.js");
   const state = detectState("");
   assert.equal(state, "gone");
 });
 
 test("detectState handles multi-line transcript and scans from back", async () => {
-  const { detectState } = await import("../src/terminal.js");
+  const { detectState } = await import("../src/utils/terminal.js");
   // Last message is assistant+end_turn, even though earlier user message is old
   const file = writeTempTranscript([
     { message: { role: "user", content: [{ type: "text", text: "hi" }] }, timestamp: new Date(Date.now() - 400_000).toISOString() },
@@ -100,22 +100,22 @@ test("detectState handles multi-line transcript and scans from back", async () =
 // ============================================================
 
 test("sendToTerminal returns false for empty tty", async () => {
-  const { sendToTerminal } = await import("../src/terminal.js");
+  const { sendToTerminal } = await import("../src/utils/terminal.js");
   assert.equal(sendToTerminal("", "hello"), false);
 });
 
 test("sendToTerminal returns false for empty message", async () => {
-  const { sendToTerminal } = await import("../src/terminal.js");
+  const { sendToTerminal } = await import("../src/utils/terminal.js");
   assert.equal(sendToTerminal("ttys001", "  "), false);
 });
 
 test("sendToTerminal returns false for non-existent TTY device", async () => {
-  const { sendToTerminal } = await import("../src/terminal.js");
+  const { sendToTerminal } = await import("../src/utils/terminal.js");
   assert.equal(sendToTerminal("ttys99999", "hello"), false);
 });
 
 test("buildTerminalAppScript targets a Terminal tab by tty", async () => {
-  const { buildTerminalAppScript } = await import("../src/terminal.js");
+  const { buildTerminalAppScript } = await import("../src/utils/terminal.js");
 
   const script = buildTerminalAppScript("ttys001", "hello");
 
@@ -126,7 +126,7 @@ test("buildTerminalAppScript targets a Terminal tab by tty", async () => {
 });
 
 test("buildTerminalAppScript escapes message text for AppleScript", async () => {
-  const { buildTerminalAppScript } = await import("../src/terminal.js");
+  const { buildTerminalAppScript } = await import("../src/utils/terminal.js");
 
   const script = buildTerminalAppScript("ttys001", "say \"hi\"\nthen \\ ok");
 

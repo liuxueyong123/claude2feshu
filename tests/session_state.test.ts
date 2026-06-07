@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { registerSession, getSession, findByPrefix, markIdle, updateHeartbeat, removeSession, listActive, isProcessAlive } from "../src/session/state.js";
-import { storage } from "../src/storage.js";
+import { storage } from "../src/utils/storage.js";
 
 function make(overrides: Record<string, unknown> = {}) {
   return { session_id: "test-sid-001", pid: process.pid, tty: "ttys001", transcript_path: "/tmp/t.jsonl", status: "active" as const, started_at: new Date().toISOString(), last_heartbeat: new Date().toISOString(), ...overrides };

@@ -3,7 +3,7 @@ import { processHookEvent, checkInboxText, popInboxCommand } from "./index.js";
 import type { HookEvent } from "./index.js";
 import { markDelivered, clearDelivered } from "../session/queue.js";
 import { replyCard } from "../feishu/api.js";
-import { log } from "../logger.js";
+import { log } from "../utils/logger.js";
 
 const router = new Router();
 
