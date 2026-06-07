@@ -21,16 +21,24 @@ type TrackerData = Record<string, TrackerEntry>; // session_id → entry
 
 // ---- 存储 ----
 
-const TRACKER_FILE = resolve(DATA_DIR, "delivery_tracker.json");
+function dataDir(): string {
+  return process.env.FEISHU_DATA_DIR || DATA_DIR;
+}
+
+function trackerFile(): string {
+  return resolve(dataDir(), "delivery_tracker.json");
+}
 
 function ensureDir(): void {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  const dir = dataDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
 function load(): TrackerData {
-  if (!existsSync(TRACKER_FILE)) return {};
+  const file = trackerFile();
+  if (!existsSync(file)) return {};
   try {
-    return JSON.parse(readFileSync(TRACKER_FILE, "utf-8")) as TrackerData;
+    return JSON.parse(readFileSync(file, "utf-8")) as TrackerData;
   } catch {
     return {};
   }
@@ -38,7 +46,7 @@ function load(): TrackerData {
 
 function save(data: TrackerData): void {
   ensureDir();
-  writeFileSync(TRACKER_FILE, JSON.stringify(data));
+  writeFileSync(trackerFile(), JSON.stringify(data));
 }
 
 // ---- 公开 API ----

@@ -22,18 +22,26 @@ export interface SessionState {
 
 // ---- 存储路径 ----
 
-const STATE_FILE = resolve(DATA_DIR, "session_states.json");
+function dataDir(): string {
+  return process.env.FEISHU_DATA_DIR || DATA_DIR;
+}
+
+function stateFile(): string {
+  return resolve(dataDir(), "session_states.json");
+}
 
 function ensureDir(): void {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  const dir = dataDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
 // ---- 读写 ----
 
 function load(): SessionState[] {
-  if (!existsSync(STATE_FILE)) return [];
+  const file = stateFile();
+  if (!existsSync(file)) return [];
   try {
-    const raw = readFileSync(STATE_FILE, "utf-8");
+    const raw = readFileSync(file, "utf-8");
     if (!raw.trim()) return [];
     return JSON.parse(raw) as SessionState[];
   } catch {
@@ -46,7 +54,7 @@ function save(states: SessionState[]): void {
   // 清理超过 24h 无心跳的记录
   const cutoff = Date.now() - 24 * 3600_000;
   const alive = states.filter((s) => new Date(s.last_heartbeat).getTime() > cutoff);
-  writeFileSync(STATE_FILE, JSON.stringify(alive, null, 2));
+  writeFileSync(stateFile(), JSON.stringify(alive, null, 2));
 }
 
 // ---- 公开 API ----

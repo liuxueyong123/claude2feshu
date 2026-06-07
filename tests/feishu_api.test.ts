@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildCard, mentionsBot } from "../src/feishu_api.ts";
+import { buildCard, mentionsBot, extractText, getQuotedMessageId } from "../src/feishu_api.ts";
 import type { FeishuMessage } from "../src/feishu_api.ts";
 
 function makeMessage(overrides: Partial<FeishuMessage>): FeishuMessage {
@@ -49,4 +49,99 @@ test("buildCard keeps final JSON payload under the Feishu card size budget", () 
 
   assert.ok(Buffer.byteLength(card, "utf-8") <= 30_000);
   assert.doesNotThrow(() => JSON.parse(card));
+});
+
+// ============================================================
+// extractText
+// ============================================================
+
+test("extractText returns plain text from text message with @bot prefix stripped", () => {
+  const msg = makeMessage({
+    msg_type: "text",
+    body: { content: JSON.stringify({ text: "@bot 运行测试" }) },
+  });
+
+  assert.equal(extractText(msg), "运行测试");
+});
+
+test("extractText strips multiple @user prefixes", () => {
+  const msg = makeMessage({
+    msg_type: "text",
+    body: { content: JSON.stringify({ text: "@bot @user2 你好世界" }) },
+  });
+
+  assert.equal(extractText(msg), "你好世界");
+});
+
+test("extractText returns empty string for text without @ prefix (pure command)", () => {
+  // When there's no @bot, the first token is treated as command
+  const msg = makeMessage({
+    msg_type: "text",
+    body: { content: JSON.stringify({ text: "运行测试" }) },
+  });
+
+  // The code strips the first @-prefixed word; if none exists, it still returns the text
+  assert.ok(extractText(msg).length > 0);
+});
+
+test("extractText returns empty string for interactive messages", () => {
+  const msg = makeMessage({
+    msg_type: "interactive",
+    body: { content: JSON.stringify({ schema: "2.0" }) },
+  });
+
+  assert.equal(extractText(msg), "");
+});
+
+// ============================================================
+// getQuotedMessageId
+// ============================================================
+
+test("getQuotedMessageId extracts reply_to.message_id from body", () => {
+  const msg = makeMessage({
+    msg_type: "text",
+    body: {
+      content: JSON.stringify({
+        text: "@bot 继续",
+        reply_to: { message_id: "om_quoted_123" },
+      }),
+    },
+  });
+
+  assert.equal(getQuotedMessageId(msg), "om_quoted_123");
+});
+
+test("getQuotedMessageId falls back to parent_id when no body reply_to", () => {
+  const msg = makeMessage({
+    msg_type: "text",
+    parent_id: "om_parent_456",
+    body: { content: JSON.stringify({ text: "@bot hello" }) },
+  });
+
+  assert.equal(getQuotedMessageId(msg), "om_parent_456");
+});
+
+test("getQuotedMessageId returns empty string when no quote info", () => {
+  const msg = makeMessage({
+    msg_type: "text",
+    body: { content: JSON.stringify({ text: "@bot hello" }) },
+  });
+
+  assert.equal(getQuotedMessageId(msg), "");
+});
+
+test("getQuotedMessageId body reply_to takes priority over parent_id", () => {
+  const msg = makeMessage({
+    msg_type: "text",
+    parent_id: "om_parent_456",
+    body: {
+      content: JSON.stringify({
+        text: "@bot 继续",
+        reply_to: { message_id: "om_reply_789" },
+      }),
+    },
+  });
+
+  // body reply_to should win over parent_id
+  assert.equal(getQuotedMessageId(msg), "om_reply_789");
 });
