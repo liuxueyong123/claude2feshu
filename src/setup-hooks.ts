@@ -24,17 +24,33 @@ interface HookDef {
   event: string;
   title: string;
   type: string;
+  /** 工具名匹配器（正则），仅 PostToolUse* 类事件使用；
+   *  空字符串表示匹配所有工具/session 级事件 */
+  matcher: string;
 }
 
-/** 需要配置的 hook 事件列表，与 README 步骤 3 一致 */
+/**
+ * 需要配置的 hook 事件列表，与 README 步骤 3 一致。
+ *
+ * 注意：PostToolUseFailure 使用正向枚举匹配器，排除 Bash。
+ * Bash 命令失败通常是探索性操作（如 ls 不存在路径、git 无变更），
+ * Claude 会自行消化并重试，无需推送通知打断用户。
+ * 如需接收 Bash 错误通知，手动将 matcher 改为 "" 即可。
+ */
 const HOOKS: HookDef[] = [
-  { event: "SessionStart",        title: "Claude 已启动",    type: "info" },
-  { event: "Stop",                title: "Claude 任务完成",   type: "success" },
-  { event: "StopFailure",         title: "Claude 异常终止",   type: "error" },
-  { event: "PermissionRequest",   title: "Claude 等待确认",   type: "warning" },
-  { event: "PermissionDenied",    title: "Claude 权限拒绝",   type: "error" },
-  { event: "Elicitation",         title: "Claude 等待输入",   type: "warning" },
-  { event: "PostToolUseFailure",  title: "Claude 操作失败",   type: "error" },
+  { event: "SessionStart",        title: "Claude 已启动",    type: "info",    matcher: "" },
+  { event: "Stop",                title: "Claude 任务完成",   type: "success", matcher: "" },
+  { event: "StopFailure",         title: "Claude 异常终止",   type: "error",   matcher: "" },
+  { event: "PermissionRequest",   title: "Claude 等待确认",   type: "warning", matcher: "" },
+  { event: "PermissionDenied",    title: "Claude 权限拒绝",   type: "error",   matcher: "" },
+  { event: "Elicitation",         title: "Claude 等待输入",   type: "warning", matcher: "" },
+  {
+    event: "PostToolUseFailure",
+    title: "Claude 操作失败",
+    type: "error",
+    // 排除 Bash：Bash 失败通常是 Claude 探索性操作，会自行消化
+    matcher: "Write|Edit|Read|WebFetch|WebSearch|Grep|Glob|Task|Agent|AskUserQuestion",
+  },
 ];
 
 // ── 工具函数 ────────────────────────────────────────────────────
@@ -96,13 +112,24 @@ interface SetupResult {
   command: string;
 }
 
-function generateHooks(): Record<string, Array<{ command: string }>> {
-  const hooks: Record<string, Array<{ command: string }>> = {};
+interface HookEntry {
+  matcher: string;
+  hooks: Array<{ type: "command"; command: string }>;
+}
+
+function generateHooks(): Record<string, HookEntry[]> {
+  const hooks: Record<string, HookEntry[]> = {};
 
   for (const h of HOOKS) {
     hooks[h.event] = [
       {
-        command: `${NOTIFY_SCRIPT} --title '${h.title}' --type ${h.type}`,
+        matcher: h.matcher,
+        hooks: [
+          {
+            type: "command",
+            command: `${NOTIFY_SCRIPT} --title '${h.title}' --type ${h.type}`,
+          },
+        ],
       },
     ];
   }
@@ -123,7 +150,7 @@ function setup(opts: { dryRun: boolean; force: boolean }): SetupResult[] {
 
   for (const [event, entries] of Object.entries(newHooks)) {
     const existingEntries = mergedHooks[event] ?? [];
-    const cmd = entries[0].command;
+    const cmd = entries[0].hooks[0].command;
     const hasFeishuHook = existingEntries.some(isFeishuHook);
 
     if (hasFeishuHook && !opts.force) {
