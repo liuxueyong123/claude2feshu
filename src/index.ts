@@ -6,11 +6,9 @@ import bodyParser from "koa-bodyparser";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { config } from "./config.js";
 import { log } from "./logger.js";
-import { startPolling, stopPolling, isPolling, loadCheckpoint, persistCheckpoint } from "./bot/index.js";
-import { pendingCount, loadMessageQueue, persistMessageQueue } from "./session/queue.js";
-import { loadSessionStates, persistSessionStates } from "./session/state.js";
-import { loadDeliveryTracker, persistDeliveryTracker } from "./session/delivery.js";
-import { loadCardMap, persistCardMap } from "./feishu/api.js";
+import { storage } from "./storage.js";
+import { startPolling, stopPolling, isPolling } from "./bot/index.js";
+import { pendingCount } from "./session/queue.js";
 import { router as botRouter } from "./bot/routes.js";
 import { router as notifyRouter } from "./notify/routes.js";
 import { router as sessionRouter } from "./session/routes.js";
@@ -21,12 +19,7 @@ const startedAt = Date.now();
 function writePid(): void { writeFileSync(config.pidFile, String(process.pid), "utf-8"); }
 function removePid(): void { try { unlinkSync(config.pidFile); } catch { /* ignore */ } }
 
-// ── 从 ./data/ 恢复内存状态 ──
-loadSessionStates();
-loadMessageQueue();
-loadDeliveryTracker();
-loadCardMap();
-loadCheckpoint();
+storage.load();
 
 const app = new Koa();
 app.use(bodyParser({ enableTypes: ["json"] }));
@@ -44,15 +37,6 @@ app.use((ctx, next) => {
   ctx.body = { ok: true, uptime: Math.floor((Date.now() - startedAt) / 1000), pid: process.pid, port: config.port, bot: isPolling() ? "polling" : "stopped", pending: pendingCount() };
 });
 
-// ── 持久化全部状态 ──
-function persistAll(): void {
-  persistSessionStates();
-  persistMessageQueue();
-  persistDeliveryTracker();
-  persistCardMap();
-  persistCheckpoint();
-}
-
 const server = app.listen(config.port, config.host, () => {
   writePid();
   log(`服务启动: http://${config.host}:${config.port} pid=${process.pid}`, "INFO");
@@ -63,7 +47,7 @@ const server = app.listen(config.port, config.host, () => {
 const shutdown = (signal: string) => {
   log(`收到 ${signal}，持久化并退出...`, "INFO");
   stopPolling();
-  persistAll();
+  storage.persist();
   removePid();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 5000);

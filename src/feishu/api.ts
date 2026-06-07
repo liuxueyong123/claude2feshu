@@ -1,7 +1,6 @@
 /**
  * 飞书 Open API 客户端 — token / 消息拉取 / @过滤 / 回复
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { config } from "../config.js";
 import { log } from "../logger.js";
 
@@ -350,37 +349,18 @@ export async function sendChatCard(title: string, content: string, color = "blue
   return messageId ?? "";
 }
 
-// ---- 卡片 → Session 映射（内存存储，退出时持久化）----
+// ---- 卡片 → Session 映射（数据在 storage）----
 
-interface CardEntry { session_id: string; sent_at: string; }
-const cardMap = new Map<string, CardEntry>();
-
-export function loadCardMap(): void {
-  const file = config.dataDir + "/card_map.json";
-  try {
-    if (existsSync(file)) {
-      const entries = JSON.parse(readFileSync(file, "utf-8")) as [string, CardEntry][];
-      for (const [k, v] of entries) cardMap.set(k, v);
-    }
-  } catch { /* ignore */ }
-}
-
-export function persistCardMap(): void {
-  const file = config.dataDir + "/card_map.json";
-  try {
-    if (!existsSync(config.dataDir)) mkdirSync(config.dataDir, { recursive: true });
-    writeFileSync(file, JSON.stringify([...cardMap.entries()]));
-  } catch { /* ignore */ }
-}
+import { storage } from "../storage.js";
 
 export function registerCardSession(messageId: string, sessionId: string): void {
   if (!messageId || !sessionId) return;
-  cardMap.set(messageId, { session_id: sessionId, sent_at: new Date().toISOString() });
+  storage.cardMap.set(messageId, { session_id: sessionId, sent_at: new Date().toISOString() });
   log(`card→session 已登记: ${messageId.slice(0, 16)}...`, "DEBUG");
 }
 
 export function lookupCardSession(quotedMessageId: string): string {
-  return cardMap.get(quotedMessageId)?.session_id ?? "";
+  return storage.cardMap.get(quotedMessageId)?.session_id ?? "";
 }
 
 let _defaultChatId = "";

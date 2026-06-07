@@ -1,37 +1,16 @@
 /** 飞书消息轮询守护进程 — 后台拉取 @消息写入 inbox */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { config } from "../config.js";
 import { log } from "../logger.js";
+import { storage } from "../storage.js";
 import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, lookupCardSession } from "../feishu/api.js";
 import { enqueue, pendingCount } from "../session/queue.js";
-import type { QueuedMessage } from "../session/queue.js";
+import type { QueuedMessage } from "../storage.js";
 import { detectState, sendToTerminal } from "../terminal.js";
 import { getSession, findByPrefix, listActive, isProcessAlive } from "../session/state.js";
 import { recordDelivery } from "../session/delivery.js";
 
 let running = false;
 let polling = false;
-
-// ── Checkpoint（内存 + 退出时持久化）──
-
-let lastMsgId = "";
-let lastMsgTime = "";
-
-const CKPT_FILE = config.dataDir + "/checkpoint.json";
-
-export function loadCheckpoint(): void {
-  try { if (existsSync(CKPT_FILE)) {
-    const c = JSON.parse(readFileSync(CKPT_FILE, "utf-8")) as { last_msg_id?: string; last_time?: string };
-    lastMsgId = c.last_msg_id ?? ""; lastMsgTime = c.last_time ?? "";
-  }} catch { /* ignore */ }
-}
-
-export function persistCheckpoint(): void {
-  try {
-    if (!existsSync(config.dataDir)) mkdirSync(config.dataDir, { recursive: true });
-    writeFileSync(CKPT_FILE, JSON.stringify({ last_msg_id: lastMsgId, last_time: lastMsgTime }));
-  } catch { /* ignore */ }
-}
 
 export function stopPolling(): void {
   running = false;
@@ -51,7 +30,7 @@ export function isPolling(): boolean {
 }
 
 async function processNewMessages(): Promise<string[]> {
-  const lastId = lastMsgId;
+  const lastId = storage.lastMsgId;
   const messages = await listReceivedMessages(20, true);
   const newMsgs = [];
   for (const msg of messages) {
@@ -121,7 +100,7 @@ async function processNewMessages(): Promise<string[]> {
     await replyCard(id, fallbackReply.title, fallbackReply.content, fallbackReply.color);
   }
   const top = newMsgs[0];
-  if (top) { lastMsgId = top.message_id; lastMsgTime = top.create_time; }
+  if (top) { storage.lastMsgId = top.message_id; storage.lastMsgTime = top.create_time; }
   return newMsgs.map((m) => m.message_id);
 }
 

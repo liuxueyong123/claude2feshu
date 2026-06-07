@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { enqueue, getPending, getInboxPending, resetMessageQueue } from "../src/session/queue.js";
-import { deliverNextPending, resetDeliveryTracker } from "../src/session/delivery.js";
+import { enqueue, getPending, getInboxPending } from "../src/session/queue.js";
+import { storage } from "../src/storage.js";
+import { deliverNextPending } from "../src/session/delivery.js";
 
 test("deliverNextPending sends only one current-session message per trigger", async () => {
-  resetMessageQueue();
-  resetDeliveryTracker();
+  storage.reset();
   enqueue({ id: "s1", chat_id: "oc_1", sender: "ou_1", content: "s1 content", session_id: "sid_1", received_at: new Date().toISOString(), status: "pending" });
   enqueue({ id: "s2", chat_id: "oc_1", sender: "ou_1", content: "s2 content", session_id: "sid_1", received_at: new Date().toISOString(), status: "pending" });
   enqueue({ id: "inbox_1", chat_id: "oc_1", sender: "ou_1", content: "inbox_1 content", received_at: new Date().toISOString(), status: "pending" });
