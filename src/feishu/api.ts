@@ -3,8 +3,8 @@
  */
 import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { config, DATA_DIR, API_BASE, REQUEST_TIMEOUT_MS } from "./config.js";
-import { log } from "./logger.js";
+import { config, DATA_DIR, API_BASE, REQUEST_TIMEOUT_MS } from "../config.js";
+import { log } from "../logger.js";
 
 let _token = { value: "", expiresAt: 0 };
 let _botOpenId = "";

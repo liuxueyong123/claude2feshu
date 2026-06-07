@@ -10,7 +10,7 @@ test("recordDelivery stores msgId for a session", async () => {
   process.env.FEISHU_DATA_DIR = dataDir;
 
   try {
-    const { recordDelivery, getLastDelivery } = await import(`../src/delivery_tracker.ts?case=record-${Date.now()}`);
+    const { recordDelivery, getLastDelivery } = await import(`../src/session/delivery.ts?case=record-${Date.now()}`);
     recordDelivery("sid-1", "om_msg_123");
     assert.equal(getLastDelivery("sid-1"), "om_msg_123");
   } finally {
@@ -26,7 +26,7 @@ test("getLastDelivery returns null for unknown session", async () => {
   process.env.FEISHU_DATA_DIR = dataDir;
 
   try {
-    const { getLastDelivery } = await import(`../src/delivery_tracker.ts?case=null-${Date.now()}`);
+    const { getLastDelivery } = await import(`../src/session/delivery.ts?case=null-${Date.now()}`);
     assert.equal(getLastDelivery("unknown-sid"), null);
   } finally {
     if (oldDir === undefined) delete process.env.FEISHU_DATA_DIR;
@@ -41,7 +41,7 @@ test("clearDelivery removes session record", async () => {
   process.env.FEISHU_DATA_DIR = dataDir;
 
   try {
-    const { recordDelivery, clearDelivery, getLastDelivery } = await import(`../src/delivery_tracker.ts?case=clear-${Date.now()}`);
+    const { recordDelivery, clearDelivery, getLastDelivery } = await import(`../src/session/delivery.ts?case=clear-${Date.now()}`);
     recordDelivery("sid-1", "om_msg_456");
     assert.equal(getLastDelivery("sid-1"), "om_msg_456");
     clearDelivery("sid-1");
@@ -59,7 +59,7 @@ test("recordDelivery overwrites previous delivery for same session", async () =>
   process.env.FEISHU_DATA_DIR = dataDir;
 
   try {
-    const { recordDelivery, getLastDelivery } = await import(`../src/delivery_tracker.ts?case=overwrite-${Date.now()}`);
+    const { recordDelivery, getLastDelivery } = await import(`../src/session/delivery.ts?case=overwrite-${Date.now()}`);
     recordDelivery("sid-1", "om_first");
     recordDelivery("sid-1", "om_second");
     assert.equal(getLastDelivery("sid-1"), "om_second");

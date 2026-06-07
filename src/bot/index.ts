@@ -1,14 +1,14 @@
 /** 飞书消息轮询守护进程 — 后台拉取 @消息写入 inbox */
 import { writeFileSync, existsSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { config, CHECKPOINT_FILE, DATA_DIR } from "./config.js";
-import { log } from "./logger.js";
-import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, lookupCardSession } from "./feishu_api.js";
-import { enqueue, pendingCount } from "./message_queue.js";
-import type { QueuedMessage } from "./message_queue.js";
-import { detectState, sendToTerminal } from "./terminal.js";
-import { getSession, findByPrefix, listActive, isProcessAlive } from "./session_state.js";
-import { recordDelivery } from "./delivery_tracker.js";
+import { config, CHECKPOINT_FILE, DATA_DIR } from "../config.js";
+import { log } from "../logger.js";
+import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, lookupCardSession } from "../feishu/api.js";
+import { enqueue, pendingCount } from "../session/queue.js";
+import type { QueuedMessage } from "../session/queue.js";
+import { detectState, sendToTerminal } from "../terminal.js";
+import { getSession, findByPrefix, listActive, isProcessAlive } from "../session/state.js";
+import { recordDelivery } from "../session/delivery.js";
 
 let running = false;
 let polling = false;

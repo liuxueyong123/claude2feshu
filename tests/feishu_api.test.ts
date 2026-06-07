@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildCard, mentionsBot, extractText, getQuotedMessageId } from "../src/feishu_api.ts";
-import type { FeishuMessage } from "../src/feishu_api.ts";
+import { buildCard, mentionsBot, extractText, getQuotedMessageId } from "../src/feishu/api.ts";
+import type { FeishuMessage } from "../src/feishu/api.ts";
 
 function makeMessage(overrides: Partial<FeishuMessage>): FeishuMessage {
   return {

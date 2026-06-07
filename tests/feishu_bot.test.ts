@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildInboxFallbackReply } from "../src/feishu_bot.ts";
+import { buildInboxFallbackReply } from "../src/bot/index.ts";
 
 test("buildInboxFallbackReply says the command is queued when no Claude session is active", () => {
   const reply = buildInboxFallbackReply("run tests");

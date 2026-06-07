@@ -6,7 +6,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { DATA_DIR } from "./config.js";
+import { DATA_DIR } from "../config.js";
 
 // ---- 类型 ----
 

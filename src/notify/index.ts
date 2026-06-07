@@ -3,17 +3,17 @@
  * 构建 hook 事件上下文，推送卡片到飞书群。
  * 核心逻辑被 notifyd HTTP 服务调用。
  */
-import { sendChatCard, replyCard } from "./feishu_api.js";
-import { getInboxPending, getPending as getPendingMessages } from "./message_queue.js";
-import { registerSession, markIdle, isProcessAlive, getSession } from "./session_state.js";
-import { findMyClaudeProcess, sendToTerminal } from "./terminal.js";
-import { getLastDelivery, clearDelivery } from "./delivery_tracker.js";
-import { log } from "./logger.js";
+import { sendChatCard, replyCard } from "../feishu/api.js";
+import { getInboxPending, getPending as getPendingMessages } from "../session/queue.js";
+import { registerSession, markIdle, isProcessAlive, getSession } from "../session/state.js";
+import { findMyClaudeProcess, sendToTerminal } from "../terminal.js";
+import { getLastDelivery, clearDelivery } from "../session/delivery.js";
+import { log } from "../logger.js";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import { execSync } from "node:child_process";
 import { hostname } from "node:os";
-import { deliverNextPending } from "./delivery_orchestrator.js";
+import { deliverNextPending } from "../session/delivery.js";
 
 // ============================================================
 // 类型

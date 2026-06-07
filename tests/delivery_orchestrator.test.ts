@@ -22,8 +22,8 @@ test("deliverNextPending sends only one current-session message per trigger", as
   process.env.FEISHU_DATA_DIR = dataDir;
 
   try {
-    const queue = await import(`../src/message_queue.ts?case=one-shot-${Date.now()}`);
-    const orchestrator = await import(`../src/delivery_orchestrator.ts?case=one-shot-${Date.now()}`);
+    const queue = await import(`../src/session/queue.ts?case=one-shot-${Date.now()}`);
+    const orchestrator = await import(`../src/session/delivery.ts?case=one-shot-${Date.now()}`);
     const sent: string[] = [];
     const replies: string[] = [];
 

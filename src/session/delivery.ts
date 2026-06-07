@@ -1,4 +1,76 @@
 /**
+ * 投递追踪 — 记录最近一次投递到每个 session 的飞书消息 ID
+ *
+ * Stop hook 触发时，notify.ts 查询此映射，用 replyCard 引用回复原始消息，
+ * 而非 sendChatCard 发送一条孤立的群聊消息。
+ *
+ * 存储: ~/.claude/feishu/delivery_tracker.json
+ */
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+import { DATA_DIR } from "../config.js";
+
+// ---- 类型 ----
+
+interface TrackerEntry {
+  msgId: string;       // 飞书消息 ID
+  timestamp: string;   // ISO
+}
+
+type TrackerData = Record<string, TrackerEntry>; // session_id → entry
+
+// ---- 存储 ----
+
+function dataDir(): string {
+  return process.env.FEISHU_DATA_DIR || DATA_DIR;
+}
+
+function trackerFile(): string {
+  return resolve(dataDir(), "delivery_tracker.json");
+}
+
+function ensureDir(): void {
+  const dir = dataDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+}
+
+function load(): TrackerData {
+  const file = trackerFile();
+  if (!existsSync(file)) return {};
+  try {
+    return JSON.parse(readFileSync(file, "utf-8")) as TrackerData;
+  } catch {
+    return {};
+  }
+}
+
+function save(data: TrackerData): void {
+  ensureDir();
+  writeFileSync(trackerFile(), JSON.stringify(data));
+}
+
+// ---- 公开 API ----
+
+/** 记录一次投递：将飞书消息 ID 关联到目标 session */
+export function recordDelivery(sessionId: string, msgId: string): void {
+  const data = load();
+  data[sessionId] = { msgId, timestamp: new Date().toISOString() };
+  save(data);
+}
+
+/** 查询最近一次投递到指定 session 的飞书消息 ID，无记录返回 null */
+export function getLastDelivery(sessionId: string): string | null {
+  return load()[sessionId]?.msgId ?? null;
+}
+
+/** 清除指定 session 的投递记录（回复后调用） */
+export function clearDelivery(sessionId: string): void {
+  const data = load();
+  delete data[sessionId];
+  save(data);
+}
+
+/**
  * 统一投递编排 — 从 inbox 和 session 队列中选择一条可达消息投递
  *
  * 优先级:
@@ -8,12 +80,12 @@
  *
  * 不会投递绑定到其他活跃 session 的消息，避免消息被错误路由。
  */
-import type { QueuedMessage } from "./message_queue.js";
-import { getPending, markDelivered } from "./message_queue.js";
-import { detectState } from "./terminal.js";
-import type { ClaudeState } from "./terminal.js";
-import { isProcessAlive, getSession } from "./session_state.js";
-import { recordDelivery } from "./delivery_tracker.js";
+import type { QueuedMessage } from "./queue.js";
+import { getPending, markDelivered } from "./queue.js";
+import { detectState } from "../terminal.js";
+import type { ClaudeState } from "../terminal.js";
+import { isProcessAlive, getSession } from "./state.js";
+// recordDelivery is defined in this file
 
 // ---- 类型 ----
 

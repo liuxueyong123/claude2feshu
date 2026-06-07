@@ -22,7 +22,7 @@ test("message queue separates inbox and session pending messages", async () => {
   process.env.FEISHU_DATA_DIR = dataDir;
 
   try {
-    const mod = await import(`../src/message_queue.ts?case=separate-${Date.now()}`);
+    const mod = await import(`../src/session/queue.ts?case=separate-${Date.now()}`);
 
     mod.enqueue(makeMsg("inbox_1"));
     mod.enqueue(makeMsg("session_1", "sid_1"));
@@ -47,7 +47,7 @@ test("pendingCount returns total pending messages", async () => {
   process.env.FEISHU_DATA_DIR = dataDir;
 
   try {
-    const mod = await import(`../src/message_queue.ts?case=count-${Date.now()}`);
+    const mod = await import(`../src/session/queue.ts?case=count-${Date.now()}`);
     assert.equal(mod.pendingCount(), 0);
     mod.enqueue(makeMsg("a"));
     mod.enqueue(makeMsg("b"));
@@ -67,7 +67,7 @@ test("pendingCount filters by session", async () => {
   process.env.FEISHU_DATA_DIR = dataDir;
 
   try {
-    const mod = await import(`../src/message_queue.ts?case=count-sid-${Date.now()}`);
+    const mod = await import(`../src/session/queue.ts?case=count-sid-${Date.now()}`);
     mod.enqueue(makeMsg("a", "sid_a"));
     mod.enqueue(makeMsg("b", "sid_b"));
     mod.enqueue(makeMsg("c"));
@@ -86,7 +86,7 @@ test("clearDelivered removes delivered messages, keeps pending", async () => {
   process.env.FEISHU_DATA_DIR = dataDir;
 
   try {
-    const mod = await import(`../src/message_queue.ts?case=cleardel-${Date.now()}`);
+    const mod = await import(`../src/session/queue.ts?case=cleardel-${Date.now()}`);
     mod.enqueue(makeMsg("p1"));
     mod.enqueue(makeMsg("p2"));
     mod.markDelivered("p1");
@@ -107,7 +107,7 @@ test("listPendingSessions groups pending by session, excludes inbox", async () =
   process.env.FEISHU_DATA_DIR = dataDir;
 
   try {
-    const mod = await import(`../src/message_queue.ts?case=lps-${Date.now()}`);
+    const mod = await import(`../src/session/queue.ts?case=lps-${Date.now()}`);
     mod.enqueue(makeMsg("a", "sid_a"));
     mod.enqueue(makeMsg("b", "sid_a"));
     mod.enqueue(makeMsg("c", "sid_b"));
