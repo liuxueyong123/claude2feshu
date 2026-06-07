@@ -1,8 +1,7 @@
 /**
  * 飞书 Open API 客户端 — token / 消息拉取 / @过滤 / 回复
  */
-import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { config } from "../config.js";
 import { log } from "../logger.js";
 
@@ -329,7 +328,7 @@ export async function sendChatCard(title: string, content: string, color = "blue
   if (!chatId) {
     const msg = "未配置 FEISHU_CHAT_ID 且无可用群聊";
     log(msg, "ERROR");
-    errlog(msg);
+    log(msg);
     return "";
   }
 
@@ -339,7 +338,7 @@ export async function sendChatCard(title: string, content: string, color = "blue
   if (code !== 0) {
     const msg = `API 发送失败: code=${code} data=${JSON.stringify(data)} chatId=${chatId}`;
     log(msg, "ERROR");
-    errlog(msg);
+    log(msg);
     return "";
   }
   const messageId = (data.data as Record<string, unknown>)?.message_id as string | undefined;
@@ -351,59 +350,37 @@ export async function sendChatCard(title: string, content: string, color = "blue
   return messageId ?? "";
 }
 
-/** 将错误写入文件，方便 hook 环境下排查 */
-function errlog(msg: string) {
+// ---- 卡片 → Session 映射（内存存储，退出时持久化）----
+
+interface CardEntry { session_id: string; sent_at: string; }
+const cardMap = new Map<string, CardEntry>();
+
+export function loadCardMap(): void {
+  const file = config.dataDir + "/card_map.json";
   try {
-    appendFileSync(resolve(config.dataDir, "feishu_error.log"), `[${new Date().toISOString()}] ${msg}\n`);
-  } catch {
-    /* ignore */
-  }
+    if (existsSync(file)) {
+      const entries = JSON.parse(readFileSync(file, "utf-8")) as [string, CardEntry][];
+      for (const [k, v] of entries) cardMap.set(k, v);
+    }
+  } catch { /* ignore */ }
 }
 
-// ---- 卡片 → Session 映射（解决 Feishu API 返回卡片降级内容问题） ----
-// GET /im/v1/messages/{msg_id} 对 interactive 卡片返回降级格式，不含 markdown，
-// 因此无法从被引用的卡片内容中提取 session ID。改为发送卡片时本地记录映射。
-
-const CARD_MAP_FILE = resolve(config.dataDir, "card_session_map.jsonl");
-
-function ensureMapDir(): void {
+export function persistCardMap(): void {
+  const file = config.dataDir + "/card_map.json";
   try {
-    mkdirSync(config.dataDir, { recursive: true });
-  } catch {
-    /* */
-  }
+    if (!existsSync(config.dataDir)) mkdirSync(config.dataDir, { recursive: true });
+    writeFileSync(file, JSON.stringify([...cardMap.entries()]));
+  } catch { /* ignore */ }
 }
 
-/** 发送卡片后记录 message_id → session_id 映射 */
 export function registerCardSession(messageId: string, sessionId: string): void {
   if (!messageId || !sessionId) return;
-  ensureMapDir();
-  try {
-    writeFileSync(CARD_MAP_FILE, JSON.stringify({ message_id: messageId, session_id: sessionId, sent_at: new Date().toISOString() }) + "\n", { flag: "a" });
-    log(`card→session 已登记: ${messageId.slice(0, 16)}... → ${sessionId.slice(0, 16)}...`, "DEBUG");
-  } catch {
-    /* ignore */
-  }
+  cardMap.set(messageId, { session_id: sessionId, sent_at: new Date().toISOString() });
+  log(`card→session 已登记: ${messageId.slice(0, 16)}...`, "DEBUG");
 }
 
-/** 通过被引用的卡片 message_id 查找 session_id */
 export function lookupCardSession(quotedMessageId: string): string {
-  if (!quotedMessageId || !existsSync(CARD_MAP_FILE)) return "";
-  try {
-    const lines = readFileSync(CARD_MAP_FILE, "utf-8").split("\n");
-    // 从后往前查（最近的映射优先）
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const entry = JSON.parse(lines[i]) as { message_id?: string; session_id?: string };
-        if (entry.message_id === quotedMessageId) return entry.session_id ?? "";
-      } catch {
-        /* skip */
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return "";
+  return cardMap.get(quotedMessageId)?.session_id ?? "";
 }
 
 let _defaultChatId = "";

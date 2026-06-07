@@ -4,14 +4,14 @@
   "description": "Claude Code ↔ 飞书双向通信",
   "type": "module",
   "scripts": {
-    "start": "nohup npx tsx src/index.ts > ~/.claude/feishu/service.log 2>&1 & sleep 1 && curl -s http://127.0.0.1:${FEISHU_NOTIFYD_PORT:-9876}/health | python3 -m json.tool 2>/dev/null || echo '(check status)'",
-    "stop": "kill $(cat ~/.claude/feishu/service.pid 2>/dev/null) 2>/dev/null && echo '✅ stopped' || echo '⚠️  not running'",
-    "status": "curl -s http://127.0.0.1:${FEISHU_NOTIFYD_PORT:-9876}/health 2>/dev/null | python3 -m json.tool || echo '❌ not running'",
-    "logs": "tail -f ~/.claude/feishu/service.log",
-    "setup-hooks": "npx tsx src/setup-hooks.ts",
-    "test": "node --import tsx --test tests/*.test.ts",
-    "build": "npx tsc",
-    "typecheck": "npx tsc --noEmit"
+    "start":        "mkdir -p ./data && nohup npx tsx src/index.ts > ./data/service.log 2>&1 & sleep 2 && curl -s http://127.0.0.1:${FEISHU_NOTIFYD_PORT:-9876}/health | python3 -m json.tool 2>/dev/null || echo '(check status)'",
+    "stop":         "kill $(cat ./data/service.pid 2>/dev/null) 2>/dev/null && echo '✅ stopped' || echo '⚠️  not running'",
+    "status":       "curl -s http://127.0.0.1:${FEISHU_NOTIFYD_PORT:-9876}/health 2>/dev/null | python3 -m json.tool || echo '❌ not running'",
+    "logs":         "tail -f ./data/service.log",
+    "setup-hooks":  "npx tsx src/setup-hooks.ts",
+    "test":         "node --import tsx --test tests/*.test.ts",
+    "build":        "npx tsc",
+    "typecheck":    "npx tsc --noEmit"
   },
   "devDependencies": {
     "@types/koa": "^3.0.3",

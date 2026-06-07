@@ -1,6 +1,5 @@
 /** 飞书消息轮询守护进程 — 后台拉取 @消息写入 inbox */
-import { writeFileSync, existsSync, readFileSync, appendFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { config } from "../config.js";
 import { log } from "../logger.js";
 import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, lookupCardSession } from "../feishu/api.js";
@@ -13,16 +12,25 @@ import { recordDelivery } from "../session/delivery.js";
 let running = false;
 let polling = false;
 
-function loadCkpt(): string {
-  if (!existsSync(config.checkpointFile)) return "";
-  try {
-    return (JSON.parse(readFileSync(config.checkpointFile, "utf-8")) as { last_msg_id?: string }).last_msg_id ?? "";
-  } catch {
-    return "";
-  }
+// ── Checkpoint（内存 + 退出时持久化）──
+
+let lastMsgId = "";
+let lastMsgTime = "";
+
+const CKPT_FILE = config.dataDir + "/checkpoint.json";
+
+export function loadCheckpoint(): void {
+  try { if (existsSync(CKPT_FILE)) {
+    const c = JSON.parse(readFileSync(CKPT_FILE, "utf-8")) as { last_msg_id?: string; last_time?: string };
+    lastMsgId = c.last_msg_id ?? ""; lastMsgTime = c.last_time ?? "";
+  }} catch { /* ignore */ }
 }
-function saveCkpt(msgId: string, msgTime: string): void {
-  writeFileSync(config.checkpointFile, JSON.stringify({ last_msg_id: msgId, last_time: msgTime }));
+
+export function persistCheckpoint(): void {
+  try {
+    if (!existsSync(config.dataDir)) mkdirSync(config.dataDir, { recursive: true });
+    writeFileSync(CKPT_FILE, JSON.stringify({ last_msg_id: lastMsgId, last_time: lastMsgTime }));
+  } catch { /* ignore */ }
 }
 
 export function stopPolling(): void {
@@ -43,7 +51,7 @@ export function isPolling(): boolean {
 }
 
 async function processNewMessages(): Promise<string[]> {
-  const lastId = loadCkpt();
+  const lastId = lastMsgId;
   const messages = await listReceivedMessages(20, true);
   const newMsgs = [];
   for (const msg of messages) {
@@ -66,21 +74,7 @@ async function processNewMessages(): Promise<string[]> {
     const rawParent = (msg as unknown as Record<string, unknown>).parent_id as string | undefined;
     const rawRoot = (msg as unknown as Record<string, unknown>).root_id as string | undefined;
     if (rawParent || rawRoot) {
-      try {
-        appendFileSync(
-          resolve(config.dataDir, "message_dump.jsonl"),
-          JSON.stringify({
-            _ts: new Date().toISOString(),
-            message_id: msg.message_id,
-            msg_type: msg.msg_type,
-            parent_id: rawParent ?? "",
-            root_id: rawRoot ?? "",
-            body_content: msg.body?.content ?? "",
-          }) + "\n",
-        );
-      } catch {
-        /* ignore */
-      }
+      log(`引用消息: msg=${msg.message_id} parent=${rawParent ?? ""} root=${rawRoot ?? ""}`, "DEBUG");
     }
 
     // ---- Session 路由 ----
@@ -126,7 +120,8 @@ async function processNewMessages(): Promise<string[]> {
     const fallbackReply = buildInboxFallbackReply(text);
     await replyCard(id, fallbackReply.title, fallbackReply.content, fallbackReply.color);
   }
-  saveCkpt(messages[0]?.message_id ?? "", messages[0]?.create_time ?? "");
+  const top = newMsgs[0];
+  if (top) { lastMsgId = top.message_id; lastMsgTime = top.create_time; }
   return newMsgs.map((m) => m.message_id);
 }
 

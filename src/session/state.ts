@@ -1,136 +1,98 @@
 /**
- * Session 状态追踪 — 维护 session_id → 进程映射
- *
- * 存储: ~/.claude/feishu/session_states.json (JSON 数组)
- * 由 notify.ts hook 写入，由 feishu_bot.ts 读取。
+ * Session 状态追踪 — 内存存储，退出时持久化到 ./data/sessions.json
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { resolve } from "node:path";
 import { config } from "../config.js";
-
-// ---- 类型 ----
 
 export interface SessionState {
   session_id: string;
   pid: number;
-  tty: string;            // 如 "ttys002"
+  tty: string;
   transcript_path: string;
   status: "active" | "idle";
-  started_at: string;     // ISO
-  last_heartbeat: string; // ISO, 用于判断进程是否还活着
+  started_at: string;
+  last_heartbeat: string;
 }
 
-// ---- 存储路径 ----
+// ═══════════════════════════════════════════════════════════════
+// 内存存储
+// ═══════════════════════════════════════════════════════════════
 
-function dataDir(): string {
-  return process.env.FEISHU_DATA_DIR || config.dataDir;
-}
+let states: SessionState[] = [];
 
-function stateFile(): string {
-  return resolve(dataDir(), "session_states.json");
-}
+const STATE_FILE = config.dataDir + "/sessions.json";
 
-function ensureDir(): void {
-  const dir = dataDir();
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-}
-
-// ---- 读写 ----
-
-function load(): SessionState[] {
-  const file = stateFile();
-  if (!existsSync(file)) return [];
+export function loadSessionStates(): void {
   try {
-    const raw = readFileSync(file, "utf-8");
-    if (!raw.trim()) return [];
-    return JSON.parse(raw) as SessionState[];
-  } catch {
-    return [];
-  }
-}
-
-function save(states: SessionState[]): void {
-  ensureDir();
-  // 清理超过 24h 无心跳的记录
+    if (existsSync(STATE_FILE)) {
+      states = JSON.parse(readFileSync(STATE_FILE, "utf-8")) as SessionState[];
+    }
+  } catch { states = []; }
+  // 清理超过 24h 的记录
   const cutoff = Date.now() - 24 * 3600_000;
-  const alive = states.filter((s) => new Date(s.last_heartbeat).getTime() > cutoff);
-  writeFileSync(stateFile(), JSON.stringify(alive, null, 2));
+  states = states.filter((s) => new Date(s.last_heartbeat).getTime() > cutoff);
 }
 
-// ---- 公开 API ----
+export function persistSessionStates(): void {
+  try {
+    if (!existsSync(config.dataDir)) mkdirSync(config.dataDir, { recursive: true });
+    const cutoff = Date.now() - 24 * 3600_000;
+    const alive = states.filter((s) => new Date(s.last_heartbeat).getTime() > cutoff);
+    writeFileSync(STATE_FILE, JSON.stringify(alive, null, 2));
+  } catch { /* ignore */ }
+}
 
-/** 注册或更新 session（SessionStart 时调用） */
+// ═══════════════════════════════════════════════════════════════
+// 公开 API
+// ═══════════════════════════════════════════════════════════════
+
 export function registerSession(s: SessionState): void {
-  const states = load();
-  // 将同一 PID 的旧 session 标记为 idle（进程复用时清理）
+  const now = new Date().toISOString();
+  // 将同一 PID 的旧 session 标记为 idle
   for (const old of states) {
     if (old.pid === s.pid && old.session_id !== s.session_id && old.status === "active") {
-      old.status = "idle";
-      old.last_heartbeat = new Date().toISOString();
+      old.status = "idle"; old.last_heartbeat = now;
     }
   }
   const idx = states.findIndex((x) => x.session_id === s.session_id);
   if (idx >= 0) {
-    states[idx] = { ...states[idx], ...s, last_heartbeat: new Date().toISOString() };
+    states[idx] = { ...states[idx], ...s, last_heartbeat: now };
   } else {
-    states.push({ ...s, last_heartbeat: new Date().toISOString() });
+    states.push({ ...s, last_heartbeat: now });
   }
-  save(states);
 }
 
-/** 更新心跳时间（每个 hook 调用时可选） */
 export function updateHeartbeat(sid: string): void {
-  const states = load();
   const s = states.find((x) => x.session_id === sid);
-  if (s) {
-    s.last_heartbeat = new Date().toISOString();
-    save(states);
-  }
+  if (s) s.last_heartbeat = new Date().toISOString();
 }
 
-/** 标记 session 为空闲 */
 export function markIdle(sid: string): void {
-  const states = load();
   const s = states.find((x) => x.session_id === sid);
-  if (s) {
-    s.status = "idle";
-    s.last_heartbeat = new Date().toISOString();
-    save(states);
-  }
+  if (s) { s.status = "idle"; s.last_heartbeat = new Date().toISOString(); }
 }
 
-/** 按完整 session_id 查询 */
 export function getSession(sid: string): SessionState | null {
-  return load().find((s) => s.session_id === sid) ?? null;
+  return states.find((s) => s.session_id === sid) ?? null;
 }
 
-/** 按 session_id 前缀匹配（从卡片文本提取时可能不完整） */
 export function findByPrefix(prefix: string): SessionState | null {
   if (prefix.length < 8) return null;
-  const states = load();
-  // 先精确匹配
   const exact = states.find((s) => s.session_id === prefix);
   if (exact) return exact;
-  // 再前缀匹配
   return states.find((s) => s.session_id.startsWith(prefix)) ?? null;
 }
 
-/** 列出所有可用 session（进程存活即可，不管 active/idle） */
 export function listActive(): SessionState[] {
-  return load().filter((s) => (s.status === "active" || s.status === "idle") && isProcessAlive(s.pid));
+  return states.filter((s) => (s.status === "active" || s.status === "idle") && isProcessAlive(s.pid));
 }
 
-/** 检查进程是否存活 */
 export function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-/** 清理指定 session */
+export function resetSessionStates(): void { states = []; }
+
 export function removeSession(sid: string): void {
-  save(load().filter((s) => s.session_id !== sid));
+  states = states.filter((s) => s.session_id !== sid);
 }
