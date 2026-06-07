@@ -46,6 +46,19 @@ export function listActive(): SessionState[] {
   return storage.sessions.filter(s => (s.status === "active" || s.status === "idle") && isProcessAlive(s.pid));
 }
 
+/** 返回状态为 active 但进程已死的 session（窗口关闭/SIGHUP 导致 hook 来不及触发） */
+export function drainDeadSessions(): SessionState[] {
+  const dead: SessionState[] = [];
+  storage.sessions = storage.sessions.map((s) => {
+    if (s.status === "active" && !isProcessAlive(s.pid)) {
+      dead.push(s);
+      return { ...s, status: "idle" as const };
+    }
+    return s;
+  });
+  return dead;
+}
+
 export function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }

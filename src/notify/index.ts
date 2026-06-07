@@ -449,9 +449,9 @@ export async function processHookEvent(event: HookEvent, title: string, message:
 
   const sid = event.session_id ?? "";
 
-  // Stop/StopFailure: 尝试引用回复原始飞书消息，形成对话线程
+  // Stop/StopFailure/SessionEnd: 尝试引用回复原始飞书消息，形成对话线程
   let notificationSent = false;
-  if (sid && (event.hook_event_name === "Stop" || event.hook_event_name === "StopFailure")) {
+  if (sid && (event.hook_event_name === "Stop" || event.hook_event_name === "StopFailure" || event.hook_event_name === "SessionEnd")) {
     const replyMsgId = getLastDelivery(sid);
     if (replyMsgId) {
       const ok = await replyCard(replyMsgId, title, fullMessage, COLORS[type] ?? "blue", sid);

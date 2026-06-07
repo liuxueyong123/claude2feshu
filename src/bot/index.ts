@@ -6,7 +6,8 @@ import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, looku
 import { enqueue, pendingCount } from "../session/queue.js";
 import type { QueuedMessage } from "../utils/storage.js";
 import { detectState, sendToTerminal } from "../utils/terminal.js";
-import { getSession, findByPrefix, listActive, isProcessAlive } from "../session/state.js";
+import { getSession, findByPrefix, listActive, isProcessAlive, drainDeadSessions } from "../session/state.js";
+import { sendNotification as notifyCard } from "../notify/index.js";
 import { recordDelivery } from "../session/delivery.js";
 
 let running = false;
@@ -190,6 +191,20 @@ function makeSessionMsg(id: string, chatId: string, sender: string, content: str
   };
 }
 
+/** 检测进程已死但 session 仍为 active 的 session（窗口关闭/SIGHUP），补发通知 */
+async function checkDeadSessions(): Promise<void> {
+  const dead = drainDeadSessions();
+  for (const s of dead) {
+    log(`检测到死 session: ${s.session_id.slice(0, 16)}... pid=${s.pid}`, "WARN");
+    await notifyCard(
+      "Claude 会话已终止",
+      `会话 ${s.session_id.slice(0, 8)}… 进程已退出。\n\n可能原因：终端窗口关闭或进程被终止。`,
+      "warning",
+      s.session_id,
+    );
+  }
+}
+
 export async function pollLoop(): Promise<number> {
   log(`🚀 监听启动 (间隔 ${config.pollInterval}s)`);
   let errors = 0;
@@ -197,6 +212,7 @@ export async function pollLoop(): Promise<number> {
     try {
       const ids = await processNewMessages();
       if (ids.length) log(`✓ ${ids.length} 条, 待处理: ${pendingCount()}`);
+      await checkDeadSessions();
       errors = 0;
     } catch (e) {
       errors++;
