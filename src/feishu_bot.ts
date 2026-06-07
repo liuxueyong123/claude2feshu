@@ -1,7 +1,7 @@
 /** 飞书消息轮询守护进程 — 后台拉取 @消息写入 inbox */
-import { writeFileSync, existsSync, readFileSync, unlinkSync, appendFileSync } from "node:fs";
+import { writeFileSync, existsSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { config, PID_FILE, CHECKPOINT_FILE, DATA_DIR } from "./config.js";
+import { config, CHECKPOINT_FILE, DATA_DIR } from "./config.js";
 import { log } from "./logger.js";
 import { listReceivedMessages, extractText, replyCard, getQuotedMessageId, lookupCardSession } from "./feishu_api.js";
 import { enqueue, pendingCount } from "./message_queue.js";
@@ -10,7 +10,8 @@ import { detectState, sendToTerminal } from "./terminal.js";
 import { getSession, findByPrefix, listActive, isProcessAlive } from "./session_state.js";
 import { recordDelivery } from "./delivery_tracker.js";
 
-let running = true;
+let running = false;
+let polling = false;
 
 function loadCkpt(): string {
   if (!existsSync(CHECKPOINT_FILE)) return "";
@@ -24,39 +25,22 @@ function saveCkpt(msgId: string, msgTime: string): void {
   writeFileSync(CHECKPOINT_FILE, JSON.stringify({ last_msg_id: msgId, last_time: msgTime }));
 }
 
-export function writePid(): void {
-  writeFileSync(PID_FILE, String(process.pid));
-}
-export function removePid(): void {
-  try {
-    unlinkSync(PID_FILE);
-  } catch {
-    /* */
-  }
-}
-export function isRunning(): boolean {
-  if (!existsSync(PID_FILE)) return false;
-  try {
-    process.kill(Number(readFileSync(PID_FILE, "utf-8").trim()), 0);
-    return true;
-  } catch {
-    try {
-      unlinkSync(PID_FILE);
-    } catch {
-      /* */
-    }
-    return false;
-  }
+export function stopPolling(): void {
+  running = false;
 }
 
-process.on("SIGTERM", () => {
-  running = false;
-  log("SIGTERM, 退出中...");
-});
-process.on("SIGINT", () => {
-  running = false;
-  log("SIGINT, 退出中...");
-});
+export function startPolling(): void {
+  if (polling) return;
+  running = true;
+  polling = true;
+  pollLoop()
+    .catch((e) => log(`pollLoop 异常: ${e}`, "ERROR"))
+    .finally(() => { polling = false; });
+}
+
+export function isPolling(): boolean {
+  return polling;
+}
 
 async function processNewMessages(): Promise<string[]> {
   const lastId = loadCkpt();
