@@ -386,10 +386,9 @@ lookupCardSession(quotedMessageId):
 │  if !routed:                                                    │
 │    enqueue({ id, chat_id, sender, content, status:"pending" })  │
 │    → 写入 message_queue.jsonl（无 session_id，即通用 inbox）      │
-│    replyCard(id, "⏳ 等待 Claude Code 启动",                       │
-│      "当前没有可用的 Claude Code 终端，消息已暂存到 inbox。          │
-│       启动 Claude Code 后会自动发送到终端。")                       │
-│    → 明确通知用户当前没有运行中的 Claude Code，只是暂存消息          │
+│    replyCard(id, "📨 已收到，等待投递",                             │
+│      "当前没有运行中的 Claude Code，指令已存入收件箱。                │
+│       下次启动后自动处理。")                                        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -401,11 +400,11 @@ lookupCardSession(quotedMessageId):
 1. 查找 session:
    session = getSession(sid)          // 精确匹配 session_id
           ?? findByPrefix(sid)        // 前缀匹配回退（卡片文本截断）
-   → 都找不到: enqueue + replyCard("⏳ 会话未运行")
+   → 都找不到: enqueue + replyCard("📨 已入队", "目标会话未运行，指令已保存。")
 
 2. 检查 transcript_path:
    if !session.transcript_path:
-     → enqueue + replyCard("⏳ 无法检测状态")
+     → enqueue + replyCard("📨 已入队", "会话状态未知，指令已保存。")
 
 3. 状态检测 + 降级保护:
    state = detectState(session.transcript_path)
@@ -426,23 +425,24 @@ lookupCardSession(quotedMessageId):
    ┌──────────┬────────────────────────────────────────────────────┐
    │ waiting  │ ok = sendViaITerm(session.tty, text)               │
    │          │                                                    │
-   │          │ 成功 → replyCard("✅ 已发送",                        │
-   │          │          "消息已自动发送到 Claude Code 终端。")       │
+   │          │ 成功 → replyCard("✅ 已投递",                        │
+   │          │          "指令已发送到终端处理。")                    │
+   │          │        recordDelivery(sid, msgId)                  │
    │          │                                                    │
    │          │ 失败 → enqueue(msg)                                │
-   │          │        replyCard("⚠️ 发送失败",                     │
-   │          │          "无法通过 iTerm2 发送，消息已入队。")        │
+   │          │        replyCard("⚠️ 投递失败",                     │
+   │          │          "无法写入终端，指令已保存。")                │
    ├──────────┼────────────────────────────────────────────────────┤
    │ busy     │ enqueue(msg) → 写入 message_queue                  │
-   │          │ replyCard("⏳ Claude 处理中",                       │
-   │          │   "Claude Code 正在执行任务，消息已暂存。")           │
+   │          │ replyCard("⏳ 处理中，已排队",                       │
+   │          │   "当前任务执行中，指令已保存。")                      │
    │          │                                                    │
    │          │ 后续 Stop/SessionStart hook 触发 deliverNextPending │
    │          │ 每次最多投递一条，避免连续写入终端                  │
    ├──────────┼────────────────────────────────────────────────────┤
    │ gone     │ enqueue(msg) → 写入 message_queue                  │
-   │(进程已死) │ replyCard("⏳ 会话已退出",                          │
-   │          │   "Claude Code 会话已结束，消息已暂存。")            │
+   │(进程已死) │ replyCard("📨 已入队",                              │
+   │          │   "会话已退出，指令已保存。")                         │
    │          │ → 下次 SessionStart 时自动投递到新终端               │
    └──────────┴────────────────────────────────────────────────────┘
 ```
@@ -453,22 +453,14 @@ lookupCardSession(quotedMessageId):
 1. 转义消息文本 (AppleScript 安全):
    \ → \\,  " → \",  换行 → 空格,  \r → 空
 
-2. 对 "/" 开头的 slash 命令特殊处理（防止 TUI 命令面板吞字符）:
-   write text "/" newline false     ← 只发 "/" 不回车
-   delay 0.3                        ← 等 Claude Code 命令面板打开
-   write text "context"             ← 再发剩余内容（带默认回车）
-
-   普通消息:
-   write text "${escaped_message}"  ← 一次性发送
-
-3. 构造 AppleScript:
+2. 构造 AppleScript:
    tell application "iTerm2"
      repeat with w in windows
        repeat with t in tabs of w
          repeat with s in sessions of t
            if (tty of s) ends with "{tty}" then
              tell s
-               ${writeOp}
+               write text "${escaped_message}"
              end tell
              return "ok"
            end if
@@ -478,14 +470,10 @@ lookupCardSession(quotedMessageId):
      return "not_found"
    end tell
 
-4. execSync("osascript", {input: script, timeout: 5000})
+3. execSync("osascript", {input: script, timeout: 5000})
    → result === "ok" → true (成功)
    → 其他 / 异常 → false (失败)
 ```
-
-> **为什么 slash 命令要延迟拆分？** 一次性 `write text "/context\n"` 会导致所有字符瞬间到达 PTY，
-> Claude Code 的 TUI 收到 `/` 后需要 React 渲染周期来切换命令面板 UI。后续字符如果在渲染完成前到达可能丢失。
-> 先发 `/` 等 300ms 再发剩余内容，给 TUI 足够时间完成状态切换。
 
 ### 步骤 8: 单条延迟投递 — `deliverNextPending()`
 
@@ -1021,7 +1009,7 @@ T+3s   用户又 @机器人 "再检查一下"
        feishu_bot 轮询到第二条消息
        detectState() → "busy"
        enqueue(msg) → message_queue
-       replyCard("⏳ Claude 处理中", "消息已暂存...")
+       replyCard("⏳ 处理中，已排队", "当前任务执行中，指令已保存。...")
 
 T+30s  Claude 处理完毕
        transcript: assistant + stop_reason="end_turn" → waiting
@@ -1055,7 +1043,7 @@ T+3s   feishu_bot 轮询到消息
        ⚡ isProcessAlive(12345) → true!
        ⚡ 降级: state = "waiting"
        sendViaITerm("ttys002", "你好") → ✅
-       replyCard("✅ 已发送")
+       replyCard("✅ 已投递")
 ```
 
 ### 场景 E: 引用消息 ID 解析（body reply_to vs parent_id）
@@ -1108,12 +1096,12 @@ T+5s   用户飞书 @机器人 "运行测试"
        feishu_bot 轮询到消息
        listActive() → [] (进程已退出)
        → 通用 inbox: enqueue(...)
-       → replyCard("⏳ 等待 Claude Code 启动", "消息已暂存到 inbox，启动后自动发送")
+       → replyCard("📨 已收到，等待投递", "当前没有运行中的 Claude Code，指令已存入收件箱。")
 
 T+60s  用户重新启动 Claude Code
        SessionStart hook 触发
        getInboxPending() → 有 1 条 pending
-       sendNotification("📥 飞书待处理指令", "1 条: 运行测试")
+       sendNotification("📥 收件箱待处理", "1 条: 运行测试")
        deliverNextPending()
        sendViaITerm("运行测试") → ✅
        markDelivered(msgId)
@@ -1178,8 +1166,7 @@ src/
 │                      #  - 存储: delivery_tracker.json
 ├── terminal.ts        # 终端交互 (macOS + iTerm2)
 │                      #  - detectState: 读 transcript 判断 Claude 状态
-│                      #  - sendViaITerm: AppleScript 发送文本
-│                      #    / 开头消息延迟拆分: / → 300ms → 剩余内容
+│                      #  - sendViaITerm: AppleScript 发送文本到指定 TTY
 │                      #  - findMyClaudeProcess: 沿 PPID 链定位当前 hook 所属 Claude 进程
 │                      #  - findClaudeProcess: 全局 ps 查找 Claude Code 进程（回退）
 │                      #  - detectTTY: tty 命令获取当前终端名
