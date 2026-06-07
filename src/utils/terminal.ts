@@ -266,6 +266,8 @@ export function findMyClaudeProcess(): { pid: number; tty: string } | null {
     }
   }
 
-  // 回退: 进程树遍历失败时，尝试全局搜索
-  return findClaudeProcess();
+  // 进程树遍历失败。不 fallback 到全局搜索：
+  // findClaudeProcess() 在多 instance 场景下会返回不确定的结果，
+  // 导致两个 Claude 窗口被注册为相同的 pid/tty。
+  return null;
 }

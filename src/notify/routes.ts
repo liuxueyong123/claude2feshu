@@ -17,8 +17,11 @@ router.post("/hook", async (ctx) => {
   const message = (ctx.query.message as string) ?? "";
   const type = (ctx.query.type as string) ?? "info";
   const includeBashErrors = "include-bash-errors" in ctx.query;
+  const pid = ctx.query.pid ? Number(ctx.query.pid) : undefined;
+  const validPid = pid && !isNaN(pid) ? pid : undefined;
+  const validTty = (ctx.query.tty as string | undefined)?.trim() || undefined;
   log(`hook: ${event.hook_event_name ?? "unknown"} session=${(event.session_id ?? "").slice(0, 16)}`, "DEBUG");
-  await processHookEvent(event, title, message, type, { includeBashErrors });
+  await processHookEvent(event, title, message, type, { includeBashErrors, pid: validPid, tty: validTty });
   ctx.body = { ok: true };
 });
 

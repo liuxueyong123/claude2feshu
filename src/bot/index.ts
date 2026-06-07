@@ -22,7 +22,9 @@ export function startPolling(): void {
   polling = true;
   pollLoop()
     .catch((e) => log(`pollLoop 异常: ${e}`, "ERROR"))
-    .finally(() => { polling = false; });
+    .finally(() => {
+      polling = false;
+    });
 }
 
 export function isPolling(): boolean {
@@ -67,7 +69,7 @@ async function processNewMessages(): Promise<string[]> {
       log(`  引用消息: ${quoteId}`);
       const sid = lookupCardSession(quoteId);
       if (sid) {
-        log(`  查找到 session: ${sid.slice(0, 16)}...`);
+        log(`  查找到 session: ${sid}`);
         await handleSessionMessage(id, chatId, sender, text, sid);
         routed = true;
       } else {
@@ -93,24 +95,28 @@ async function processNewMessages(): Promise<string[]> {
 
     // 通用 inbox（无 session 绑定）
     enqueue({
-      id, chat_id: chatId, sender, content: text.trim(),
-      received_at: msg.create_time, status: "pending",
+      id,
+      chat_id: chatId,
+      sender,
+      content: text.trim(),
+      received_at: msg.create_time,
+      status: "pending",
     });
     const fallbackReply = buildInboxFallbackReply(text);
     await replyCard(id, fallbackReply.title, fallbackReply.content, fallbackReply.color);
   }
   const top = newMsgs[0];
-  if (top) { storage.lastMsgId = top.message_id; storage.lastMsgTime = top.create_time; }
+  if (top) {
+    storage.lastMsgId = top.message_id;
+    storage.lastMsgTime = top.create_time;
+  }
   return newMsgs.map((m) => m.message_id);
 }
 
 export function buildInboxFallbackReply(text: string): { title: string; content: string; color: string } {
   return {
     title: "📨 已收到，等待投递",
-    content:
-      `指令：${text.slice(0, 200)}\n\n` +
-      "当前没有运行中的 Claude Code，指令已存入收件箱。\n" +
-      "下次启动后自动处理。",
+    content: `指令：${text.slice(0, 200)}\n\n` + "当前没有运行中的 Claude Code，指令已存入收件箱。\n" + "下次启动后自动处理。",
     color: "yellow",
   };
 }
@@ -118,7 +124,7 @@ export function buildInboxFallbackReply(text: string): { title: string; content:
 // ---- Session 路由处理 ----
 
 async function handleSessionMessage(msgId: string, chatId: string, sender: string, text: string, sid: string): Promise<void> {
-  log(`🔗 Session 路由: ${sid.slice(0, 16)}...`);
+  log(`🔗 Session 路由: ${sid}`);
 
   const session = getSession(sid) ?? findByPrefix(sid);
   if (!session) {

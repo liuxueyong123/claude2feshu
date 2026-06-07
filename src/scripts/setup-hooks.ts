@@ -112,22 +112,46 @@ interface HookEntry {
   hooks: Array<{ type: "command"; command: string }>;
 }
 
-function buildCurlCmd(title: string, type: string): string {
+function buildCurlCmd(title: string, type: string, opts?: { withProcessInfo?: boolean }): string {
   const params = new URLSearchParams({ title, type });
-  return `curl -s -X POST "${NOTIFYD_URL}/hook?${params.toString()}" --data-binary @- -H 'Content-Type: application/json'`;
+  const baseUrl = `${NOTIFYD_URL}/hook?${params.toString()}`;
+  if (!opts?.withProcessInfo) {
+    return `curl -s -X POST "${baseUrl}" --data-binary @- -H 'Content-Type: application/json'`;
+  }
+
+  // SessionStart 专用：在 hook 子进程中沿 PPID 链找到 Claude 的 PID/TTY，
+  // 作为 query 参数传给 notifyd，确保多 session 时不会重复。
+  return [
+    `_PID=$$`,
+    `_CPID=""`,
+    `_CTTY=""`,
+    `while [ "$_PID" -gt 1 ]; do`,
+    `  _PPID=$(ps -p $_PID -o ppid= 2>/dev/null | tr -d ' ')`,
+    `  _CMD=$(ps -p $_PPID -o command= 2>/dev/null)`,
+    `  case "$_CMD" in`,
+    `    *claude2feishu*|*hook*) ;;`,
+    `    *claude*) _CPID="$_PPID"; _CTTY=$(ps -p $_PPID -o tty= 2>/dev/null | tr -d ' '); break ;;`,
+    `  esac`,
+    `  _PID="$_PPID"`,
+    `done`,
+    `_EXTRA=""`,
+    `[ -n "$_CPID" ] && [ -n "$_CTTY" ] && _EXTRA="&pid=$_CPID&tty=$_CTTY"`,
+    `curl -s -X POST "${baseUrl}$_EXTRA" --data-binary @- -H 'Content-Type: application/json'`,
+  ].join("\n");
 }
 
 function generateHooks(): Record<string, HookEntry[]> {
   const hooks: Record<string, HookEntry[]> = {};
 
   for (const h of HOOKS) {
+    const withProcessInfo = h.event === "SessionStart";
     hooks[h.event] = [
       {
         matcher: h.matcher,
         hooks: [
           {
             type: "command",
-            command: buildCurlCmd(h.title, h.type),
+            command: buildCurlCmd(h.title, h.type, { withProcessInfo }),
           },
         ],
       },

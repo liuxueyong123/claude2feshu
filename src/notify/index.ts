@@ -241,52 +241,59 @@ function getModel(event: HookEvent): string {
 
 /**
  * 提取模型最近的输出内容。
- * 优先读 transcript 文件最后几行，fallback 到 hook 事件的 output/message 字段。
+ *
+ * 优先级:
+ *   1. last_assistant_message — Stop 事件直接携带，最可靠
+ *   2. transcript 文件 — 内容最完整（PreToolUse 等事件需要）
+ *   3. event.output/message/response — 最后兜底
  */
 function getModelOutput(event: HookEvent): string {
+  // 1) Stop 事件：Claude Code 直接在事件里带了最后一句话
+  const lastMsg = (event as Record<string, unknown>).last_assistant_message;
+  if (typeof lastMsg === "string" && lastMsg.trim()) {
+    return clipBytes(lastMsg.trim(), 5000);
+  }
+
+  // 2) 回退到 transcript（PreToolUse 等事件必须走这里）
   const tp = event.transcript_path ?? "";
-  if (!tp || !existsSync(tp)) {
-    const out = event.output ?? event.message ?? event.response ?? "";
-    if (typeof out === "string" && out.trim()) {
-      const cleaned = out
-        .split("\n")
-        .filter((l) => l.trim())
-        .join("\n");
-      return clipBytes(cleaned, 5000);
-    }
-    return "";
-  }
-
-  try {
-    const raw = readFileSync(tp, "utf-8");
-    const lines = raw.trim().split("\n");
-    // 从后往前找 assistant 消息的 text content
-    const texts: string[] = [];
-    for (let i = lines.length - 1; i >= 0 && texts.length < 3; i--) {
-      try {
-        const obj = JSON.parse(lines[i]);
-        const msg = obj?.message;
-        if (!msg || msg.role !== "assistant") continue;
-        for (const c of msg.content ?? []) {
-          if (c.type === "text" && c.text) {
-            texts.unshift(c.text as string);
+  if (tp && existsSync(tp)) {
+    try {
+      const raw = readFileSync(tp, "utf-8");
+      const lines = raw.trim().split("\n");
+      // 从后往前找 assistant 消息的 text content（只取最近一条）
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const obj = JSON.parse(lines[i]);
+          const msg = obj?.message;
+          if (!msg || msg.role !== "assistant") continue;
+          const content = msg.content;
+          if (typeof content === "string") {
+            const result = clipBytes(content.trim(), 5000);
+            if (result) return result;
+          } else if (Array.isArray(content)) {
+            // 取数组里最后一个 text 块（倒序遍历）
+            for (let j = content.length - 1; j >= 0; j--) {
+              const c = content[j] as Record<string, unknown>;
+              if (c.type === "text" && typeof c.text === "string" && (c.text as string).trim()) {
+                return clipBytes((c.text as string).trim(), 5000);
+              }
+            }
           }
+        } catch {
+          /* skip malformed */
         }
-      } catch {
-        /* skip malformed */
       }
+    } catch {
+      /* ignore */
     }
-    if (texts.length > 0) {
-      const cleaned = texts[texts.length - 1]
-        .split("\n")
-        .filter((l) => l.trim())
-        .join("\n");
-      return clipBytes(cleaned, 5000);
-    }
-  } catch {
-    /* ignore */
   }
 
+  // 3) 兜底：event 自带的输出字段
+  const out = event.output ?? event.message ?? event.response ?? "";
+  if (typeof out === "string" && out.trim()) {
+    const cleaned = out.split("\n").filter((l) => l.trim()).join("\n");
+    return clipBytes(cleaned, 5000);
+  }
   return "";
 }
 
@@ -390,8 +397,6 @@ export function popInboxCommand(): string {
 // ============================================================
 
 async function deliverNextInBackground(pid: number, tty: string, sid: string, transcriptPath: string): Promise<void> {
-  log(`📬 开始单条队列投递`);
-
   const result = await deliverNextPending({
     sessionId: sid,
     tty,
@@ -409,9 +414,8 @@ async function deliverNextInBackground(pid: number, tty: string, sid: string, tr
       pendingTotal === 0 ? "success" : "warning",
       sid,
     );
+    log(`📬 单条投递完成: sent=${result.sent} remaining=${result.remaining} reason=${result.reason}`);
   }
-
-  log(`📬 单条投递完成: sent=${result.sent} remaining=${result.remaining} reason=${result.reason}`);
 }
 
 // ============================================================
@@ -420,26 +424,20 @@ async function deliverNextInBackground(pid: number, tty: string, sid: string, tr
 
 export interface ProcessHookEventOpts {
   includeBashErrors?: boolean;
+  /** 由 hook 命令通过 query 参数传入的 Claude 进程 PID（比全局 ps 搜索更精准） */
+  pid?: number;
+  /** 由 hook 命令通过 query 参数传入的 Claude 进程 TTY */
+  tty?: string;
 }
 
 /**
  * 处理 hook 事件：过滤 → 构建上下文 → 发通知 → Session 生命周期管理。
  */
-export async function processHookEvent(
-  event: HookEvent,
-  title: string,
-  message: string,
-  type: string,
-  opts: ProcessHookEventOpts = {},
-): Promise<void> {
+export async function processHookEvent(event: HookEvent, title: string, message: string, type: string, opts: ProcessHookEventOpts = {}): Promise<void> {
   // ---- 通知过滤 ----
   // Bash 工具执行失败通常是 Claude 探索性操作（如 ls 路径不存在、git 无变更），
   // Claude 会自行消化错误并重试，无需推送通知打断用户。
-  if (
-    event.hook_event_name === "PostToolUseFailure" &&
-    event.tool_name === "Bash" &&
-    !opts.includeBashErrors
-  ) {
+  if (event.hook_event_name === "PostToolUseFailure" && event.tool_name === "Bash" && !opts.includeBashErrors) {
     log(`Bash 错误已过滤: ${(event.error ?? "").slice(0, 120)}`, "DEBUG");
     return;
   }
@@ -471,7 +469,15 @@ export async function processHookEvent(
   // ---- Session 生命周期管理 ----
 
   if (event.hook_event_name === "SessionStart" && sid) {
-    const proc = findMyClaudeProcess();
+    // 优先使用 hook 命令通过 query 参数传入的 pid/tty（运行在 Claude 子进程中，更精准），
+    // 回退到 findMyClaudeProcess()（兼容旧版 hook 配置）
+    let proc: { pid: number; tty: string } | null = null;
+    if (opts.pid && opts.tty && !isNaN(opts.pid)) {
+      proc = { pid: opts.pid, tty: opts.tty };
+    }
+    if (!proc) {
+      proc = findMyClaudeProcess();
+    }
     if (proc) {
       registerSession({
         session_id: sid,
@@ -482,7 +488,7 @@ export async function processHookEvent(
         started_at: new Date().toISOString(),
         last_heartbeat: "",
       });
-      log(`Session 注册: ${sid.slice(0, 16)}... pid=${proc.pid} tty=${proc.tty}`, "DEBUG");
+      log(`Session 注册: ${sid}... pid=${proc.pid} tty=${proc.tty}`, "DEBUG");
     }
 
     const p = getInboxPending();
